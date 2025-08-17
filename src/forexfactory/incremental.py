@@ -1,7 +1,6 @@
 # src/forexfactory/incremental.py
 
 import logging
-import os
 import pandas as pd
 from datetime import datetime, timedelta
 from dateutil.tz import gettz
@@ -16,11 +15,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def scrape_incremental(from_date, to_date, output_csv, tzname="Asia/Tehran", scrape_details=False):
+async def scrape_incremental(from_date, to_date, output_csv, tzname="Asia/Tehran", scrape_details=False):
     """
     Example: day-by-day approach but we only re-scrape if day is missing or incomplete.
     For simplicity, let's re-scrape entire range. Then we can add logic if needed.
     """
     # You can implement a logic that checks existing_df if days are complete or not.
     # For now, let's just call scrape_range_pandas:
-    scrape_range_pandas(from_date, to_date, output_csv, tzname=tzname, scrape_details=scrape_details)
+    await scrape_range_pandas(from_date, to_date, output_csv, tzname=tzname, scrape_details=scrape_details)
