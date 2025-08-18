@@ -6,6 +6,7 @@ import logging
 import argparse
 from datetime import datetime
 from dateutil.tz import gettz
+import nodriver as uc
 
 from .incremental import scrape_incremental
 
@@ -16,7 +17,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def main():
+async def main():
     parser = argparse.ArgumentParser(description="Forex Factory Scraper (Incremental + pandas)")
     parser.add_argument('--start', type=str, required=True, help='Start date (YYYY-MM-DD)')
     parser.add_argument('--end', type=str, required=True, help='End date (YYYY-MM-DD)')
@@ -30,7 +31,7 @@ def main():
     from_date = datetime.fromisoformat(args.start).replace(tzinfo=tz)
     to_date = datetime.fromisoformat(args.end).replace(tzinfo=tz)
 
-    scrape_incremental(from_date, to_date, args.csv, tzname=args.tz, scrape_details=args.details)
+    await scrape_incremental(from_date, to_date, args.csv, tzname=args.tz, scrape_details=args.details)
 
 if __name__ == "__main__":
-    main()
+    uc.loop().run_until_complete(main())
