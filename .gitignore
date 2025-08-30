@@ -3,3 +3,5 @@ forex_factory_catalog.csv
 logs_file
 chromedriver.exe
 venv
+src/forexfactory/__pycache__/*
+*/__pycache__/*

@@ -199,9 +199,10 @@ async def scrape_range_pandas(from_date: datetime, to_date: datetime, output_csv
     ensure_csv_header(output_csv)
     existing_df = read_existing_data(output_csv)
 
-    browser = await uc.start(browser_executable_path="/home/jules/.cache/ms-playwright/chromium-1181/chrome-linux/chrome", no_sandbox=True, browser_args=['--disable-gpu', '--headless'])
+    # browser = await uc.start(browser_executable_path="/home/jules/.cache/ms-playwright/chromium-1181/chrome-linux/chrome", no_sandbox=True, browser_args=['--disable-gpu', '--headless'])
+    # await page.set_window_size(1400, 1000)
+    browser = await uc.start()
     page = await browser.get('about:blank')
-    await page.set_window_size(1400, 1000)
 
     total_new = 0
     day_count = (to_date - from_date).days + 1

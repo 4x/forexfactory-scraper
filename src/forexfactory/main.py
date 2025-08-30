@@ -4,7 +4,7 @@ import sys
 import os
 import logging
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from dateutil.tz import gettz
 import nodriver as uc
 
@@ -18,9 +18,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 async def main():
+    today = datetime.today()
     parser = argparse.ArgumentParser(description="Forex Factory Scraper (Incremental + pandas)")
-    parser.add_argument('--start', type=str, required=True, help='Start date (YYYY-MM-DD)')
-    parser.add_argument('--end', type=str, required=True, help='End date (YYYY-MM-DD)')
+    parser.add_argument('--start', type=str, required=True, help='Start date (YYYY-MM-DD)', default=today.strftime('%Y-%m-%d'))
+    parser.add_argument('--end', type=str, required=True, help='End date (YYYY-MM-DD)', default=(today+timedelta(weeks=1)).strftime('%Y-%m-%d'))
     parser.add_argument('--csv', type=str, default="forex_factory_cache.csv", help='Output CSV file')
     parser.add_argument('--tz', type=str, default="Asia/Tehran", help='Timezone')
     parser.add_argument('--details', action='store_true', help='Scrape details or not')
