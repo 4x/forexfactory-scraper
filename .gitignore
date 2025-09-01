@@ -5,3 +5,7 @@ chromedriver.exe
 venv
 src/forexfactory/__pycache__/*
 */__pycache__/*
+*.csv
+forexfactory_debug_*
+src/forexfactory/utils/__pycache__/*
+src/forexfactory_scraper.egg-info/PKG-INFO

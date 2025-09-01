@@ -9,8 +9,24 @@
             "python": "${workspaceFolder}/.venv/Scripts/python.exe",
             "type": "debugpy",
             "request": "launch",
-            "program": "${file}",
+            "module": "forexfactory.scraper",
             "console": "integratedTerminal"
+        },
+        {
+            "name": "main",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "forexfactory.main",
+            "justMyCode": true,
+            "args": ["--start", "2025-09-02", "--end", "2025-09-02"]
+        },
+        {
+            "name": "Run tests",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["tests"],
+            "justMyCode": true
         }
     ]
 }

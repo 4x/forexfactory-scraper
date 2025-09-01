@@ -9,22 +9,24 @@ from dateutil.tz import gettz
 import nodriver as uc
 
 from .incremental import scrape_incremental
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger(__name__)
+from forexfactory.utils.logging import configure_logging
 
 async def main():
+    configure_logging()
+    logger = logging.getLogger(__name__)
+    logger.debug("Debug message - should appear now")
+    logger.info("Info message")
     today = datetime.today()
     parser = argparse.ArgumentParser(description="Forex Factory Scraper (Incremental + pandas)")
-    parser.add_argument('--start', type=str, required=True, help='Start date (YYYY-MM-DD)', default=today.strftime('%Y-%m-%d'))
-    parser.add_argument('--end', type=str, required=True, help='End date (YYYY-MM-DD)', default=(today+timedelta(weeks=1)).strftime('%Y-%m-%d'))
+    parser.add_argument('--start', type=str, required=True,
+        help='Start date (YYYY-MM-DD)', default=today.strftime('%Y-%m-%d'))
+    parser.add_argument('--end', type=str, required=True,
+        help='End date (YYYY-MM-DD)', default=(today+timedelta(weeks=1)).strftime('%Y-%m-%d'))
     parser.add_argument('--csv', type=str, default="forex_factory_cache.csv", help='Output CSV file')
-    parser.add_argument('--tz', type=str, default="Asia/Tehran", help='Timezone')
-    parser.add_argument('--details', action='store_true', help='Scrape details or not')
+    parser.add_argument('--tz', type=str,
+        default=datetime.now().astimezone().tzname(), help='Timezone')
+    parser.add_argument('--details', action='store_false', default=True,
+        help='Scrape details or not')
 
     args = parser.parse_args()
 

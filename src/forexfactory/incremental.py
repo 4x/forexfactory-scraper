@@ -8,11 +8,6 @@ from dateutil.tz import gettz
 from .csv_util import ensure_csv_header, read_existing_data, write_data_to_csv, merge_new_data
 from .scraper import scrape_range_pandas
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
 logger = logging.getLogger(__name__)
 
 async def scrape_incremental(from_date, to_date, output_csv, tzname="Asia/Tehran", scrape_details=False):
