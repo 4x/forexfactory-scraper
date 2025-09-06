@@ -4,11 +4,87 @@ import logging
 import pandas as pd
 from datetime import datetime, timedelta
 import nodriver as uc
-from forex_common import Currency
+from .utils.csv_util import ensure_csv_header, read_existing_data, merge_new_data, write_data_to_csv
 
+from forex_common import Currency
 from .event import CalendarEvent, parse_rows
 
 logger = logging.getLogger(__name__)
+
+# --------------------
+# Wrappers / orchestration
+# --------------------
+
+async def scrape_range_pandas(from_date: datetime, to_date: datetime,
+    output_csv: str, tzname: str, scrape_details: bool = False):
+    '''Entry to point to module (from main -> incremental)'''
+
+    ensure_csv_header(output_csv)
+    existing_df = read_existing_data(output_csv)
+
+    browser = await uc.start()
+    page = await browser.get('about:blank')
+
+    total_new = 0
+    day_count = (to_date - from_date).days + 1
+    logger.info(f"Scraping from {from_date.date()} to {to_date.date()} for {day_count} days.")
+
+    try:
+        current_day = from_date
+        while current_day <= to_date:
+            logger.info(f"Scraping day {current_day.strftime('%Y-%m-%d')}...")
+            df_new = await scrape_day(page, current_day, existing_df, scrape_details=scrape_details)
+
+            if not df_new.empty:
+                merged_df = merge_new_data(existing_df, df_new)
+                new_rows = len(merged_df) - len(existing_df)
+                if new_rows > 0:
+                    logger.info(f"Added/Updated {new_rows} rows for {current_day.date()}")
+                    logger.info(merged_df.tail(new_rows).to_string(index=False))
+                existing_df = merged_df
+                total_new += max(0, new_rows)
+
+                # Save updated data to CSV after processing the day's data.
+                write_data_to_csv(existing_df, output_csv)
+
+            current_day += timedelta(days=1)
+    finally:
+        if browser:
+            async def _try_call_shutdown(obj):
+                # Try a list of common shutdown/close method names used by various drivers
+                for name in ("close", "quit", "stop", "shutdown", "disconnect"):
+                    func = getattr(obj, name, None)
+                    if not func:
+                        continue
+                    try:
+                        res = func()
+                        # If the call returned a coroutine, await it
+                        if asyncio.iscoroutine(res):
+                            await res
+                        logger.info(f"[nodriver]] {name} called successfully.")
+                        return
+                    except Exception as exc:
+                        logger.warning(f"Attempt to call nodriver.{name}() raised: {exc}")
+                logger.warning("No supported shutdown method succeeded for WebDriver instance.")
+
+            try:
+                await _try_call_shutdown(browser)
+            except Exception as e:
+                logger.error(f"Error closing nodriver: {e}")
+            finally:
+                browser = None
+
+    # Final save (if needed)
+    write_data_to_csv(existing_df, output_csv)
+    logger.info(f"Done. Total new/updated rows: {total_new}")
+
+async def scrape_day(page, the_date: datetime, existing_df: pd.DataFrame, scrape_details=False) -> pd.DataFrame:
+    """
+    Re-scrape a single day, using existing_df to check for already-saved details.
+    """
+    df_day_new = await parse_calendar_day(page, the_date,
+        scrape_details=scrape_details, existing_df=existing_df)
+    return df_day_new
 
 def detail_data_to_string(detail_data: dict) -> str:
     """
@@ -22,6 +98,172 @@ def detail_data_to_string(detail_data: dict) -> str:
         parts.append(f"{k_clean}: {v_clean}")
     return " | ".join(parts)
 
+# --------------------
+# Main day parser
+# --------------------
+async def parse_calendar_day(page, the_date: datetime,
+            scrape_details=False, existing_df=None) -> pd.DataFrame:
+    """
+    Scrape data for a single day (the_date) and return a DataFrame with columns:
+      DateTime, Currency, Impact, Event, Actual, Forecast, Previous, Detail
+
+    This function first tries to use nodriver's select/select_all. If those raise a DOM/Protocol
+    exception (e.g. '-32000'), it falls back to running JS via page.evaluate(...) to
+    collect the visible rows as a serializable list of dicts. Detail scraping (if requested)
+    is handled via evaluate as well (click via JS, then extract the detail table).
+    """
+    date_str = the_date.strftime('%b%d.%Y').lower()
+    url = f"https://www.forexfactory.com/calendar?day={date_str}"
+    logger.debug(f"Scraping {url}")
+    await page.get(url)
+
+    # small delay to let JS start running (helps with race conditions)
+    await asyncio.sleep(0.35)
+
+    # ---- helper: robust wait for calendar table (tries select, then fallback evaluate)
+    async def _wait_for_calendar_table_and_get_rows(page, url, max_attempts=3):
+                # xpath='//table[contains(@class,"calendar__table")]'):
+        last_exc = None
+        for attempt in range(1, max_attempts + 1):
+            try: # normal fast path first
+                if attempt > 1:
+                    await asyncio.sleep(min(0.5 * (2 ** (attempt - 2)), 2.0))
+                # this may raise ProtocolException if CDP dom query fails
+                nodes = await page.select_all('//tr[contains(@class,"calendar__row")]')                
+                if not nodes: # normalize: some drivers return None
+                    nodes = []
+                return {"mode": "elements", "nodes": nodes}
+            except Exception as exc:
+                last_exc = exc
+                msg = str(exc)
+                logger.warning("Waiting for calendar table attempt %d/%d failed: %s", attempt, max_attempts, msg)
+                # if it looks like the CDP DOM error, try a page reload/get once
+                if ('DOM Error' in msg) or ('-32000' in msg) or (
+                    'Execution context' in msg) or (
+                        'context' in msg and 'destroyed' in msg):
+                    try:
+                        reload_fn = getattr(page, "reload", None)
+                        if reload_fn:
+                            res = reload_fn()
+                            if asyncio.iscoroutine(res):
+                                await res
+                        else:
+                            await page.get(url)
+                        logger.info("Tried page.reload()/re-get after DOM error.")                        
+                        await asyncio.sleep(0.5) # small pause after reload
+                    except Exception:
+                        logger.debug("reload/get attempt failed",exc_info=True)
+                # Next: try the JS fallback to directly pull row data from the page's runtime
+                try:
+                    js = r"""
+                    (() => {
+                        const rows = Array.from(document.querySelectorAll('tr.calendar__row'));
+                        return rows.map(r => {
+                            const cls = r.className || '';
+                            const q = sel => {
+                                const el = r.querySelector(sel);
+                                return el ? el.innerText.trim() : '';
+                            };
+                            const getSpanTitle = (sel) => {
+                                const sp = r.querySelector(sel);
+                                if (!sp) return '';
+                                if (sp.getAttribute) {
+                                    return sp.getAttribute('title') || (sp.innerText || '').trim();
+                                }
+                                return (sp.innerText || '').trim();
+                            };
+                            return {
+                                className: cls,
+                                time: q('td.calendar__time'),
+                                currency: q('td.calendar__currency'),
+                                impact: getSpanTitle('td.calendar__impact span') || q('td.calendar__impact'),
+                                event: q('td.calendar__event'),
+                                actual: q('td.calendar__actual'),
+                                forecast: q('td.calendar__forecast'),
+                                previous: q('td.calendar__previous'),
+                                hasDetail: !!r.querySelector('td.calendar__detail a')
+                            };
+                        });
+                    })();
+                    """
+                    rows_data = await page.evaluate(js)
+                    events = parse_rows(rows_data)
+
+                    for e in events:    logger.debug(e)
+                    # logger.debug('JS evaluation:\n')
+                    # logger.debug(rows_data)
+
+                    # if we have this list of CalendarEvents, we're good
+                    if events:
+                        return {"mode": "js", "rows_data": rows_data}
+
+                    # if JS returned an array, use it
+                    if isinstance(rows_data, list) and len(rows_data) > 0:
+                        return {"mode": "js", "rows_data": rows_data}
+                    else:
+                        logger.debug("JS did not return row list.")
+                except Exception as e2:
+                    logger.debug("JS fallback evaluate attempt %d failed: %s",
+                                 attempt, e2, exc_info=True)
+
+                # continue retry loop
+                continue
+
+        # if we got here, nothing succeeded. attempt to dump the page HTML to disk for debugging
+        try:
+            logger.debug('Nothing succeeded: attempting to dump page')
+            page_html = None
+            for attr in ("get_content", "get_html",
+                         "content", "page_source", "source"):
+                fn = getattr(page, attr, None)
+                if fn:
+                    try:
+                        res = fn()
+                        if asyncio.iscoroutine(res):
+                            res = await res
+                        page_html = str(res)
+                        break
+                    except Exception:
+                        continue
+            if not page_html:
+                try:
+                    page_html = await page.evaluate("() => document.documentElement.outerHTML")
+                except Exception:
+                    page_html = None
+            if page_html:
+                fname = f"forexfactory_debug_{the_date.strftime('%Y%m%d')}.html"
+                with open(fname, "w", encoding="utf-8") as fh:
+                    fh.write(page_html[:300000])
+                logger.warning("Saved debug HTML snapshot to %s (truncated).", fname)
+        except Exception:
+            logger.debug("Failed to dump page HTML 4 debugging", exc_info=True)
+        raise last_exc or RuntimeError("Failed waiting for calendar table.")
+
+    # call helper
+    try:
+        rows_result = await _wait_for_calendar_table_and_get_rows(page, url)
+    except Exception as e:
+        logger.warning(f"Extraction did not work for {the_date.date()}: {e}", exc_info=True)
+        return pd.DataFrame(columns=["DateTime", "Currency", "Impact", "Event", "Actual", "Forecast", "Previous", "Detail"])
+
+    # ----------------------------------------------------
+    # Extract data using the appropriate mode
+    # ----------------------------------------------------
+    current_day = the_date
+    logger.debug("Found %d rows for %s using mode %s",
+        len(rows_result.get("nodes", []))
+        if "nodes" in rows_result else len(rows_result.get("rows_data", [])),
+        the_date.date(),
+        rows_result["mode"])
+    
+    if rows_result["mode"] == "elements":
+        data_list = await extract_via_elements(rows_result["nodes"],
+            current_day, scrape_details, existing_df, page)
+    else: # JS mode
+        data_list = await extract_via_javascript(rows_result["rows_data"],
+            current_day, scrape_details, existing_df, page)
+
+    return pd.DataFrame(data_list)
 
 # --------------------
 # Helper utilities
@@ -419,249 +661,3 @@ async def extract_via_javascript(rows_data, current_day: datetime, scrape_detail
         })
     
     return data_list
-
-
-# --------------------
-# Main day parser
-# --------------------
-async def parse_calendar_day(page, the_date: datetime,
-            scrape_details=False, existing_df=None) -> pd.DataFrame:
-    """
-    Scrape data for a single day (the_date) and return a DataFrame with columns:
-      DateTime, Currency, Impact, Event, Actual, Forecast, Previous, Detail
-
-    This function first tries to use nodriver's select/select_all. If those raise a DOM/Protocol
-    exception (e.g. '-32000'), it falls back to running JS via page.evaluate(...) to
-    collect the visible rows as a serializable list of dicts. Detail scraping (if requested)
-    is handled via evaluate as well (click via JS, then extract the detail table).
-    """
-    date_str = the_date.strftime('%b%d.%Y').lower()
-    url = f"https://www.forexfactory.com/calendar?day={date_str}"
-    logger.info(f"Scraping {url}")
-    await page.get(url)
-
-    # small delay to let JS start running (helps with race conditions)
-    await asyncio.sleep(0.35)
-
-    # ---- helper: robust wait for calendar table (tries select, then fallback evaluate)
-    async def _wait_for_calendar_table_and_get_rows(page, url, max_attempts=3):
-                # xpath='//table[contains(@class,"calendar__table")]'):
-        last_exc = None
-        for attempt in range(1, max_attempts + 1):
-            try:
-                # try the normal fast path first
-                if attempt > 1:
-                    await asyncio.sleep(min(0.5 * (2 ** (attempt - 2)), 2.0))
-                # this may raise ProtocolException if CDP dom query fails
-                nodes = await page.select_all('//tr[contains(@class,"calendar__row")]')
-                # normalize: some drivers return None
-                if not nodes:
-                    nodes = []
-                return {"mode": "elements", "nodes": nodes}
-            except Exception as exc:
-                last_exc = exc
-                msg = str(exc)
-                logger.warning("Waiting for calendar table attempt %d/%d failed: %s", attempt, max_attempts, msg)
-                # if it looks like the CDP DOM error, try a page reload/get once
-                if ('DOM Error' in msg) or ('-32000' in msg) or ('Execution context' in msg) or ('context' in msg and 'destroyed' in msg):
-                    try:
-                        reload_fn = getattr(page, "reload", None)
-                        if reload_fn:
-                            res = reload_fn()
-                            if asyncio.iscoroutine(res):
-                                await res
-                        else:
-                            await page.get(url)
-                        logger.info("Tried page.reload()/re-get after DOM error.")
-                        # small pause after reload
-                        await asyncio.sleep(0.5)
-                    except Exception:
-                        logger.debug("reload/get attempt failed", exc_info=True)
-                # Next: try the JS fallback to directly pull row data from the page's runtime
-                try:
-                    js = r"""
-                    (() => {
-                        const rows = Array.from(document.querySelectorAll('tr.calendar__row'));
-                        return rows.map(r => {
-                            const cls = r.className || '';
-                            const q = sel => {
-                                const el = r.querySelector(sel);
-                                return el ? el.innerText.trim() : '';
-                            };
-                            const getSpanTitle = (sel) => {
-                                const sp = r.querySelector(sel);
-                                if (!sp) return '';
-                                if (sp.getAttribute) {
-                                    return sp.getAttribute('title') || (sp.innerText || '').trim();
-                                }
-                                return (sp.innerText || '').trim();
-                            };
-                            return {
-                                className: cls,
-                                time: q('td.calendar__time'),
-                                currency: q('td.calendar__currency'),
-                                impact: getSpanTitle('td.calendar__impact span') || q('td.calendar__impact'),
-                                event: q('td.calendar__event'),
-                                actual: q('td.calendar__actual'),
-                                forecast: q('td.calendar__forecast'),
-                                previous: q('td.calendar__previous'),
-                                hasDetail: !!r.querySelector('td.calendar__detail a')
-                            };
-                        });
-                    })();
-                    """
-                    rows_data = await page.evaluate(js)
-
-
-                    events = parse_rows(rows_data)
-
-                    for e in events:
-                        print(e)
-
-
-                    logger.debug('JS evaluation:\n')
-                    logger.debug(rows_data)
-
-                    # if JS returned an array, use it
-                    if isinstance(rows_data, list) and len(rows_data) > 0:
-                        return {"mode": "js", "rows_data": rows_data}
-                except Exception as e2:
-                    logger.debug("JS fallback evaluate attempt %d failed: %s",
-                                 attempt, e2, exc_info=True)
-
-                # continue retry loop
-                continue
-
-        # if we got here, nothing succeeded. attempt to dump the page HTML to disk for debugging
-        try:
-            logger.debug('Nothing succeeded: attempting to dump page')
-            page_html = None
-            for attr in ("get_content", "get_html", "content", "page_source", "source"):
-                fn = getattr(page, attr, None)
-                if fn:
-                    try:
-                        res = fn()
-                        if asyncio.iscoroutine(res):
-                            res = await res
-                        page_html = str(res)
-                        break
-                    except Exception:
-                        continue
-            if not page_html:
-                try:
-                    page_html = await page.evaluate("() => document.documentElement.outerHTML")
-                except Exception:
-                    page_html = None
-            if page_html:
-                fname = f"forexfactory_debug_{the_date.strftime('%Y%m%d')}.html"
-                with open(fname, "w", encoding="utf-8") as fh:
-                    fh.write(page_html[:300000])
-                logger.warning("Saved debug HTML snapshot to %s (truncated).", fname)
-        except Exception:
-            logger.debug("Failed to dump page HTML for debugging.", exc_info=True)
-
-        raise last_exc or RuntimeError("Failed waiting for calendar table.")
-
-    # call helper
-    try:
-        rows_result = await _wait_for_calendar_table_and_get_rows(page, url)
-    except Exception as e:
-        logger.warning(f"Extraction did not work for {the_date.date()}: {e}", exc_info=True)
-        return pd.DataFrame(columns=["DateTime", "Currency", "Impact", "Event", "Actual", "Forecast", "Previous", "Detail"])
-
-    # ----------------------------------------------------
-    # Extract data using the appropriate mode
-    # ----------------------------------------------------
-    current_day = the_date
-    logger.debug("Found %d rows for %s using mode %s",
-        len(rows_result.get("nodes", []))
-        if "nodes" in rows_result else len(rows_result.get("rows_data", [])),
-        the_date.date(),
-        rows_result["mode"])
-    
-    if rows_result["mode"] == "elements":
-        data_list = await extract_via_elements(
-            rows_result["nodes"], current_day, scrape_details, existing_df, page
-        )
-    else:
-        # JS mode
-        data_list = await extract_via_javascript(
-            rows_result["rows_data"], current_day, scrape_details, existing_df, page
-        )
-
-    # Done
-    return pd.DataFrame(data_list)
-
-# --------------------
-# Wrappers / orchestration
-# --------------------
-async def scrape_day(page, the_date: datetime, existing_df: pd.DataFrame, scrape_details=False) -> pd.DataFrame:
-    """
-    Re-scrape a single day, using existing_df to check for already-saved details.
-    """
-    df_day_new = await parse_calendar_day(page, the_date, scrape_details=scrape_details, existing_df=existing_df)
-    return df_day_new
-
-
-async def scrape_range_pandas(from_date: datetime, to_date: datetime, output_csv: str, tzname="Asia/Tehran",
-                              scrape_details=False):
-    from .utils.csv_util import ensure_csv_header, read_existing_data, merge_new_data, write_data_to_csv
-
-    ensure_csv_header(output_csv)
-    existing_df = read_existing_data(output_csv)
-
-    browser = await uc.start()
-    page = await browser.get('about:blank')
-
-    total_new = 0
-    day_count = (to_date - from_date).days + 1
-    logger.info(f"Scraping from {from_date.date()} to {to_date.date()} for {day_count} days.")
-
-    try:
-        current_day = from_date
-        while current_day <= to_date:
-            logger.info(f"Scraping day {current_day.strftime('%Y-%m-%d')}...")
-            df_new = await scrape_day(page, current_day, existing_df, scrape_details=scrape_details)
-
-            if not df_new.empty:
-                merged_df = merge_new_data(existing_df, df_new)
-                new_rows = len(merged_df) - len(existing_df)
-                if new_rows > 0:
-                    logger.info(f"Added/Updated {new_rows} rows for {current_day.date()}")
-                    logger.info(merged_df.tail(new_rows).to_string(index=False))
-                existing_df = merged_df
-                total_new += max(0, new_rows)
-
-                # Save updated data to CSV after processing the day's data.
-                write_data_to_csv(existing_df, output_csv)
-
-            current_day += timedelta(days=1)
-    finally:
-        if browser:
-            async def _try_call_shutdown(obj):
-                # Try a list of common shutdown/close method names used by various drivers
-                for name in ("close", "quit", "stop", "shutdown", "disconnect"):
-                    func = getattr(obj, name, None)
-                    if not func:
-                        continue
-                    try:
-                        res = func()
-                        # If the call returned a coroutine, await it
-                        if asyncio.iscoroutine(res):
-                            await res
-                        logger.info(f"Chrome WebDriver {name} called successfully.")
-                        return
-                    except Exception as exc:
-                        logger.warning(f"Attempt to call WebDriver.{name}() raised: {exc}")
-                logger.warning("No supported shutdown method succeeded for WebDriver instance.")
-
-            try:
-                await _try_call_shutdown(browser)
-            except Exception as e:
-                logger.error(f"Error closing WebDriver: {e}")
-            finally:
-                browser = None
-
-    # Final save (if needed)
-    write_data_to_csv(existing_df, output_csv)
-    logger.info(f"Done. Total new/updated rows: {total_new}")
