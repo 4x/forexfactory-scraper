@@ -5,7 +5,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from dateutil.tz import gettz
 
-from .csv_util import ensure_csv_header, read_existing_data, write_data_to_csv, merge_new_data
+from .utils.csv_util import ensure_csv_header, read_existing_data, write_data_to_csv, merge_new_data
 from .scraper import scrape_range_pandas
 
 logger = logging.getLogger(__name__)

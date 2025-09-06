@@ -1,7 +1,5 @@
 # src/forexfactory/main.py
 
-import sys
-import os
 import logging
 import argparse
 from datetime import datetime, timedelta
@@ -14,8 +12,10 @@ from forexfactory.utils.logging import configure_logging
 async def main():
     configure_logging()
     logger = logging.getLogger(__name__)
-    logger.debug("Debug message - should appear now")
-    logger.info("Info message")
+    logging.getLogger("nodriver").setLevel(logging.WARNING)
+    logging.getLogger("selenium").setLevel(logging.WARNING)
+    logging.getLogger("pandas").setLevel(logging.WARNING)
+
     today = datetime.today()
     parser = argparse.ArgumentParser(description="Forex Factory Scraper (Incremental + pandas)")
     parser.add_argument('--start', type=str, required=True,

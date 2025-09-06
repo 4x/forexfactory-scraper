@@ -16,6 +16,7 @@ dependencies = [
 	"tzdata",
 	"pandas",
 	"rich>=14.1.0",
+	"forex-common",
 ]
 
 [project.urls]
@@ -27,3 +28,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.uv.sources]
+forex-common = { path = "../forex_common", editable = true }

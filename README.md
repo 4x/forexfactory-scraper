@@ -1,8 +1,7 @@
 # Forex Factory Scraper
 
-A robust and flexible web scraper for [Forex Factory](https://www.forexfactory.com/) calendar events. This tool leverages Selenium and pandas to efficiently collect, update, and manage Forex Factory event data, supporting incremental scraping and optional detailed event information.
-## Download 
-You can Download csv date from [huggingface](https://huggingface.co/datasets/Ehsanrs2/Forex_Factory_Calendar)
+A robust and flexible web scraper for [Forex Factory](https://www.forexfactory.com/) calendar events. This tool leverages `nodriver` and `pandas` to efficiently collect, update, and manage Forex Factory event data, supporting incremental scraping and optional detailed event information.
+
 ## Table of Contents
 
 - [Features](#features)
@@ -30,7 +29,7 @@ You can Download csv date from [huggingface](https://huggingface.co/datasets/Ehs
 
 - **Python 3.7+**: Ensure you have Python installed. You can download it from [python.org](https://www.python.org/downloads/).
 
-### Step-by-Step Guide
+### Step-by-Step Installation Guide
 
 1. **Clone the Repository**
 
@@ -69,11 +68,6 @@ You can Download csv date from [huggingface](https://huggingface.co/datasets/Ehs
    pip install -r requirements.txt
    ```
 
-   **Note:** Make sure `requirements.txt` includes all necessary libraries such as `selenium`, `pandas`, `undetected-chromedriver`, and others.
-
-4. **Download WebDriver**
-
-   The scraper uses `undetected-chromedriver` to handle dynamic content and bypass some scraping protections. No additional setup is required as `undetected-chromedriver` manages the ChromeDriver version automatically.
 
 ## Usage
 
@@ -236,7 +230,6 @@ Contributions are welcome! If you encounter bugs or have suggestions for improve
    Provide a clear description of your changes and the problem they solve.
 
 ## License
-
 This project is licensed under the [MIT License](LICENSE).
 
 ---

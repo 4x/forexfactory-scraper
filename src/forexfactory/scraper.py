@@ -1,16 +1,14 @@
-# src/forexfactory/scraper.py
-
 import asyncio
 import re
 import logging
 import pandas as pd
 from datetime import datetime, timedelta
 import nodriver as uc
+from forex_common import Currency
 
-from .csv_util import ensure_csv_header, read_existing_data, write_data_to_csv, merge_new_data
+from .event import CalendarEvent, parse_rows
 
 logger = logging.getLogger(__name__)
-
 
 def detail_data_to_string(detail_data: dict) -> str:
     """
@@ -124,26 +122,28 @@ async def parse_detail_table(detail_element):
 # --------------------
 # Main day parser
 # --------------------
-async def parse_calendar_day(page, the_date: datetime, scrape_details=False, existing_df=None) -> pd.DataFrame:
+async def parse_calendar_day(page, the_date: datetime,
+            scrape_details=False, existing_df=None) -> pd.DataFrame:
     """
     Scrape data for a single day (the_date) and return a DataFrame with columns:
       DateTime, Currency, Impact, Event, Actual, Forecast, Previous, Detail
 
     This function first tries to use nodriver's select/select_all. If those raise a DOM/Protocol
-    exception (the '-32000' you saw), it falls back to running JS via page.evaluate(...) to
+    exception (e.g. '-32000'), it falls back to running JS via page.evaluate(...) to
     collect the visible rows as a serializable list of dicts. Detail scraping (if requested)
     is handled via evaluate as well (click via JS, then extract the detail table).
     """
     date_str = the_date.strftime('%b%d.%Y').lower()
     url = f"https://www.forexfactory.com/calendar?day={date_str}"
-    logger.info(f"Scraping URL: {url}")
+    logger.info(f"Scraping {url}")
     await page.get(url)
 
     # small delay to let JS start running (helps with race conditions)
     await asyncio.sleep(0.35)
 
     # ---- helper: robust wait for calendar table (tries select, then fallback evaluate)
-    async def _wait_for_calendar_table_and_get_rows(page, url, max_attempts=3, xpath='//table[contains(@class,"calendar__table")]'):
+    async def _wait_for_calendar_table_and_get_rows(page, url, max_attempts=3):
+                # xpath='//table[contains(@class,"calendar__table")]'):
         last_exc = None
         for attempt in range(1, max_attempts + 1):
             try:
@@ -210,19 +210,29 @@ async def parse_calendar_day(page, the_date: datetime, scrape_details=False, exi
                     """
                     rows_data = await page.evaluate(js)
 
+
+                    events = parse_rows(rows_data)
+
+                    for e in events:
+                        print(e)
+
+
+                    logger.debug('JS evaluation:\n')
                     logger.debug(rows_data)
 
                     # if JS returned an array, use it
                     if isinstance(rows_data, list) and len(rows_data) > 0:
                         return {"mode": "js", "rows_data": rows_data}
                 except Exception as e2:
-                    logger.debug("JS fallback evaluate failed on attempt %d: %s", attempt, e2, exc_info=True)
+                    logger.debug("JS fallback evaluate attempt %d failed: %s",
+                                 attempt, e2, exc_info=True)
 
                 # continue retry loop
                 continue
 
         # if we got here, nothing succeeded. attempt to dump the page HTML to disk for debugging
         try:
+            logger.debug('Nothing succeeded: attempting to dump page')
             page_html = None
             for attr in ("get_content", "get_html", "content", "page_source", "source"):
                 fn = getattr(page, attr, None)
@@ -259,17 +269,23 @@ async def parse_calendar_day(page, the_date: datetime, scrape_details=False, exi
 
     # ----------------------------------------------------
     # Two modes now:
-    #   - mode == "elements": nodes are nodriver elements (old path)
-    #   - mode == "js": rows_data is a list of serializable dicts collected via evaluate
+    #   - "elements": nodes are nodriver elements (old path)
+    #   - "js": rows_data is a list of serializable dicts collected via evaluate
     # ----------------------------------------------------
     data_list = []
     current_day = the_date
-    logger.debug("Found %d rows for %s using mode %s", len(rows_result.get("nodes", [])) if "nodes" in rows_result else len(rows_result.get("rows_data", [])), the_date.date(), rows_result["mode"])
+    logger.debug("Found %d rows for %s using mode %s",
+    len(rows_result.get("nodes", []))
+        if "nodes" in rows_result else len(rows_result.get("rows_data", [])),
+    the_date.date(),
+    rows_result["mode"])
     if rows_result["mode"] == "elements":
+        logger.debug("Extracting rows using element handles")
         rows = rows_result["nodes"]
         # iterate exactly like your original code but using safe helpers is recommended
         for row in rows:
             logger.debug('for row')
+            logger.debug(row)
 
             try:
                 row_class = await row.get_attribute("class") or ""
@@ -288,7 +304,8 @@ async def parse_calendar_day(page, the_date: datetime, scrape_details=False, exi
                 actual_el = await row.select('.//td[contains(@class,"calendar__actual")]')
                 forecast_el = await row.select('.//td[contains(@class,"calendar__forecast")]')
                 previous_el = await row.select('.//td[contains(@class,"calendar__previous")]')
-            except Exception:
+            except Exception as e:
+                logger.warning("Error reading row cells", exc_info=True)
                 continue
 
             time_text = (await (time_el.get_text() if time_el else "")).strip() if time_el else ""
@@ -305,7 +322,8 @@ async def parse_calendar_day(page, the_date: datetime, scrape_details=False, exi
                     impact_text = (await impact_span.get_attribute("title")) or ""
                 if not impact_text and impact_el:
                     impact_text = (await impact_el.get_text()).strip()
-            except Exception:
+            except Exception as e:
+                logger.warning("Error reading impact cell", exc_info=True)
                 impact_text = (await (impact_el.get_text() if impact_el else "")).strip() if impact_el else ""
 
             # parse time -> event_dt (same logic as your original parser)
@@ -394,14 +412,10 @@ async def parse_calendar_day(page, the_date: datetime, scrape_details=False, exi
 
     else:
         # JS mode: rows_data is list of serializable dicts extracted via page.evaluate
+        logger.debug("JS mode: extracting rows data")
         rows_data = rows_result["rows_data"]
         for idx, rdict in enumerate(rows_data):
-            logger.debug("Row %d data: %s", idx, rdict)
-
-            # html = await rdict.inner_html()
-            logger.debug('else')
-            logger.debug(rdict)
-
+            logger.debug("JS mode: %d data: %s", idx, rdict)
             row_class = rdict.get("className", "") or ""
             if "day-breaker" in row_class or "no-event" in row_class:
                 continue
@@ -527,7 +541,7 @@ async def scrape_day(page, the_date: datetime, existing_df: pd.DataFrame, scrape
 
 async def scrape_range_pandas(from_date: datetime, to_date: datetime, output_csv: str, tzname="Asia/Tehran",
                               scrape_details=False):
-    from .csv_util import ensure_csv_header, read_existing_data, merge_new_data, write_data_to_csv
+    from .utils.csv_util import ensure_csv_header, read_existing_data, merge_new_data, write_data_to_csv
 
     ensure_csv_header(output_csv)
     existing_df = read_existing_data(output_csv)
