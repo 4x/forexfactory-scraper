@@ -119,6 +119,308 @@ async def parse_detail_table(detail_element):
     return detail_data
 
 
+def parse_time_to_datetime(time_text: str, base_date: datetime) -> datetime:
+    """
+    Shared time parsing logic for both extraction modes.
+    Converts ForexFactory time text to datetime object.
+    """
+    event_dt = base_date
+    time_lower = time_text.lower()
+    
+    if "day" in time_lower and "all day" in time_lower:
+        event_dt = event_dt.replace(hour=0, minute=0, second=0)
+    elif "day" in time_lower:
+        event_dt = event_dt.replace(hour=23, minute=59, second=59)
+    elif "data" in time_lower:
+        event_dt = event_dt.replace(hour=0, minute=0, second=1)
+    else:
+        m = re.search(r'(\d{1,2}):(\d{2})\s*(am|pm)?', time_lower)
+        if m:
+            hh = int(m.group(1))
+            mm = int(m.group(2))
+            ampm = m.group(3)
+            if ampm:
+                ampm = ampm.lower()
+                if ampm == 'pm' and hh < 12:
+                    hh += 12
+                if ampm == 'am' and hh == 12:
+                    hh = 0
+            try:
+                event_dt = event_dt.replace(hour=hh, minute=mm, second=0)
+            except Exception:
+                event_dt = event_dt.replace(hour=0, minute=0, second=0)
+    
+    return event_dt
+
+
+async def parse_event_details(page, row_or_index, event_dt: datetime, currency_text: str, 
+                            event_text: str, existing_df, mode: str = "elements") -> str:
+    """
+    Extract event details for a given row.
+    
+    Args:
+        page: Browser page object
+        row_or_index: Either a row element (elements mode) or row index (js mode)
+        event_dt: Event datetime
+        currency_text: Currency code
+        event_text: Event name
+        existing_df: DataFrame of existing data to check for cached details
+        mode: "elements" or "js"
+    
+    Returns:
+        Detail string or empty string if no details found
+    """
+    detail_str = ""
+    
+    try:
+        # Check existing_df first to avoid re-scraping
+        if existing_df is not None:
+            matched = existing_df[
+                (existing_df["DateTime"] == event_dt.isoformat()) &
+                (existing_df["Currency"].str.strip() == currency_text) &
+                (existing_df["Event"].str.strip() == event_text)
+            ]
+            if not matched.empty:
+                existing_detail = str(matched.iloc[0]["Detail"]).strip() if pd.notnull(matched.iloc[0]["Detail"]) else ""
+                if existing_detail:
+                    return existing_detail
+
+        if mode == "elements":
+            # Element-based detail extraction
+            open_link = await row_or_index.select('.//td[contains(@class,"calendar__detail")]/a')
+            if open_link:
+                try:
+                    await open_link.scroll_into_view()
+                except Exception:
+                    pass
+                await asyncio.sleep(0.25)
+                try:
+                    await open_link.click()
+                except Exception:
+                    logger.debug("click() on detail link failed (elements path)", exc_info=True)
+
+                # Extract detail via element selector
+                try:
+                    detail_element = await page.select('//tr[contains(@class,"calendar__details--detail")]', timeout=3)
+                    detail_data = await parse_detail_table(detail_element)
+                    detail_str = detail_data_to_string(detail_data)
+                except Exception:
+                    logger.debug("Couldn't read detail element after click (elements path)", exc_info=True)
+
+                # Close detail panel
+                try:
+                    close_link = await page.select('.//a[@title="Close Detail"]')
+                    close_link = await _normalize_element(close_link)
+                    if close_link:
+                        try:
+                            await close_link.click()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+        elif mode == "js":
+            # JavaScript-based detail extraction
+            idx = row_or_index  # In JS mode, this is the row index
+            js_click = f"""
+            (() => {{
+                const rows = Array.from(document.querySelectorAll('tr.calendar__row'));
+                if (!rows || rows.length <= {idx}) return false;
+                const link = rows[{idx}].querySelector('td.calendar__detail a');
+                if (!link) return false;
+                link.scrollIntoView();
+                link.click();
+                return true;
+            }})();
+            """
+            try:
+                clicked = await page.evaluate(js_click)
+                if clicked:
+                    # Wait for detail row to appear
+                    await asyncio.sleep(0.45)
+                    js_detail = r"""
+                    (() => {
+                        const out = {};
+                        const detailRow = document.querySelector('tr.calendar__details--detail');
+                        if (!detailRow) return null;
+                        const table = detailRow.querySelector('table.calendarspecs');
+                        if (!table) return null;
+                        Array.from(table.querySelectorAll('tr')).forEach(tr => {
+                            const tds = tr.querySelectorAll('td');
+                            if (tds.length >= 2) {
+                                const k = (tds[0].innerText || '').trim();
+                                const v = (tds[1].innerText || '').trim();
+                                if (k) out[k] = v;
+                            }
+                        });
+                        return out;
+                    })();
+                    """
+                    detail_data = await page.evaluate(js_detail)
+                    if isinstance(detail_data, dict):
+                        detail_str = detail_data_to_string(detail_data)
+                    # Close detail panel
+                    try:
+                        await page.evaluate("""() => { const c = document.querySelector('a[title="Close Detail"]'); if (c){ c.click(); return true } return false }""")
+                    except Exception:
+                        pass
+            except Exception:
+                logger.debug("JS detail click/extract failed for idx %d", idx, exc_info=True)
+
+    except Exception:
+        logger.debug(f"Detail extraction error ({mode} path)", exc_info=True)
+    
+    return detail_str
+
+
+async def extract_via_elements(rows, current_day: datetime, scrape_details: bool, 
+                             existing_df, page) -> list:
+    """
+    Extract calendar data using nodriver element handles.
+    
+    Args:
+        rows: List of row elements
+        current_day: Base date for the calendar day
+        scrape_details: Whether to extract event details
+        existing_df: DataFrame of existing data
+        page: Browser page object
+    
+    Returns:
+        List of event dictionaries
+    """
+    logger.debug("Extracting rows using element handles")
+    data_list = []
+    
+    for row in rows:
+        logger.debug('Processing row element')
+        logger.debug(row)
+
+        try:
+            row_class = await row.get_attribute("class") or ""
+        except Exception:
+            logger.warning("Error reading row HTML or class", exc_info=True)
+            row_class = ""
+        
+        if "day-breaker" in row_class or "no-event" in row_class:
+            continue
+
+        # Extract cell elements
+        try:
+            time_el = await row.select('.//td[contains(@class,"calendar__time")]')
+            currency_el = await row.select('.//td[contains(@class,"calendar__currency")]')
+            impact_el = await row.select('.//td[contains(@class,"calendar__impact")]')
+            event_el = await row.select('.//td[contains(@class,"calendar__event")]')
+            actual_el = await row.select('.//td[contains(@class,"calendar__actual")]')
+            forecast_el = await row.select('.//td[contains(@class,"calendar__forecast")]')
+            previous_el = await row.select('.//td[contains(@class,"calendar__previous")]')
+        except Exception as e:
+            logger.warning("Error reading row cells", exc_info=True)
+            continue
+
+        # Extract text from elements
+        time_text = (await (time_el.get_text() if time_el else "")).strip() if time_el else ""
+        currency_text = (await (currency_el.get_text() if currency_el else "")).strip() if currency_el else ""
+        event_text = (await (event_el.get_text() if event_el else "")).strip() if event_el else ""
+        actual_text = (await (actual_el.get_text() if actual_el else "")).strip() if actual_el else ""
+        forecast_text = (await (forecast_el.get_text() if forecast_el else "")).strip() if forecast_el else ""
+        previous_text = (await (previous_el.get_text() if previous_el else "")).strip() if previous_el else ""
+
+        # Extract impact text (with special handling for span title)
+        impact_text = ""
+        try:
+            impact_span = await (impact_el.select('.//span') if impact_el else None)
+            if impact_span:
+                impact_text = (await impact_span.get_attribute("title")) or ""
+            if not impact_text and impact_el:
+                impact_text = (await impact_el.get_text()).strip()
+        except Exception as e:
+            logger.warning("Error reading impact cell", exc_info=True)
+            impact_text = (await (impact_el.get_text() if impact_el else "")).strip() if impact_el else ""
+
+        # Parse time to datetime
+        event_dt = parse_time_to_datetime(time_text, current_day)
+
+        # Extract details if requested
+        detail_str = ""
+        if scrape_details:
+            detail_str = await parse_event_details(
+                page, row, event_dt, currency_text, event_text, 
+                existing_df, mode="elements"
+            )
+
+        data_list.append({
+            "DateTime": event_dt.isoformat(),
+            "Currency": currency_text,
+            "Impact": impact_text,
+            "Event": event_text,
+            "Actual": actual_text,
+            "Forecast": forecast_text,
+            "Previous": previous_text,
+            "Detail": detail_str
+        })
+    
+    return data_list
+
+
+async def extract_via_javascript(rows_data, current_day: datetime, scrape_details: bool,
+                                existing_df, page) -> list:
+    """
+    Extract calendar data using JavaScript evaluation results.
+    
+    Args:
+        rows_data: List of dictionaries from JavaScript evaluation
+        current_day: Base date for the calendar day
+        scrape_details: Whether to extract event details
+        existing_df: DataFrame of existing data
+        page: Browser page object
+    
+    Returns:
+        List of event dictionaries
+    """
+    logger.debug("Extracting rows using JavaScript data")
+    data_list = []
+    
+    for idx, rdict in enumerate(rows_data):
+        logger.debug("JS mode row %d data: %s", idx, rdict)
+        
+        row_class = rdict.get("className", "") or ""
+        if "day-breaker" in row_class or "no-event" in row_class:
+            continue
+
+        # Extract text fields from dictionary
+        time_text = (rdict.get("time") or "").strip()
+        currency_text = (rdict.get("currency") or "").strip()
+        event_text = (rdict.get("event") or "").strip()
+        actual_text = (rdict.get("actual") or "").strip()
+        forecast_text = (rdict.get("forecast") or "").strip()
+        previous_text = (rdict.get("previous") or "").strip()
+        impact_text = (rdict.get("impact") or "").strip()
+
+        # Parse time to datetime
+        event_dt = parse_time_to_datetime(time_text, current_day)
+
+        # Extract details if requested and available
+        detail_str = ""
+        if scrape_details and rdict.get("hasDetail", False):
+            detail_str = await parse_event_details(
+                page, idx, event_dt, currency_text, event_text,
+                existing_df, mode="js"
+            )
+
+        data_list.append({
+            "DateTime": event_dt.isoformat(),
+            "Currency": currency_text,
+            "Impact": impact_text,
+            "Event": event_text,
+            "Actual": actual_text,
+            "Forecast": forecast_text,
+            "Previous": previous_text,
+            "Detail": detail_str
+        })
+    
+    return data_list
+
+
 # --------------------
 # Main day parser
 # --------------------
@@ -268,262 +570,24 @@ async def parse_calendar_day(page, the_date: datetime,
         return pd.DataFrame(columns=["DateTime", "Currency", "Impact", "Event", "Actual", "Forecast", "Previous", "Detail"])
 
     # ----------------------------------------------------
-    # Two modes now:
-    #   - "elements": nodes are nodriver elements (old path)
-    #   - "js": rows_data is a list of serializable dicts collected via evaluate
+    # Extract data using the appropriate mode
     # ----------------------------------------------------
-    data_list = []
     current_day = the_date
     logger.debug("Found %d rows for %s using mode %s",
-    len(rows_result.get("nodes", []))
+        len(rows_result.get("nodes", []))
         if "nodes" in rows_result else len(rows_result.get("rows_data", [])),
-    the_date.date(),
-    rows_result["mode"])
+        the_date.date(),
+        rows_result["mode"])
+    
     if rows_result["mode"] == "elements":
-        logger.debug("Extracting rows using element handles")
-        rows = rows_result["nodes"]
-        # iterate exactly like your original code but using safe helpers is recommended
-        for row in rows:
-            logger.debug('for row')
-            logger.debug(row)
-
-            try:
-                row_class = await row.get_attribute("class") or ""
-            except Exception:
-                logger.warning("Error reading row HTML or class", exc_info=True)
-                row_class = ""
-            if "day-breaker" in row_class or "no-event" in row_class:
-                continue
-
-            # reuse your original selectors for cells (these should succeed since we have element handles)
-            try:
-                time_el = await row.select('.//td[contains(@class,"calendar__time")]')
-                currency_el = await row.select('.//td[contains(@class,"calendar__currency")]')
-                impact_el = await row.select('.//td[contains(@class,"calendar__impact")]')
-                event_el = await row.select('.//td[contains(@class,"calendar__event")]')
-                actual_el = await row.select('.//td[contains(@class,"calendar__actual")]')
-                forecast_el = await row.select('.//td[contains(@class,"calendar__forecast")]')
-                previous_el = await row.select('.//td[contains(@class,"calendar__previous")]')
-            except Exception as e:
-                logger.warning("Error reading row cells", exc_info=True)
-                continue
-
-            time_text = (await (time_el.get_text() if time_el else "")).strip() if time_el else ""
-            currency_text = (await (currency_el.get_text() if currency_el else "")).strip() if currency_el else ""
-            event_text = (await (event_el.get_text() if event_el else "")).strip() if event_el else ""
-            actual_text = (await (actual_el.get_text() if actual_el else "")).strip() if actual_el else ""
-            forecast_text = (await (forecast_el.get_text() if forecast_el else "")).strip() if forecast_el else ""
-            previous_text = (await (previous_el.get_text() if previous_el else "")).strip() if previous_el else ""
-
-            impact_text = ""
-            try:
-                impact_span = await (impact_el.select('.//span') if impact_el else None)
-                if impact_span:
-                    impact_text = (await impact_span.get_attribute("title")) or ""
-                if not impact_text and impact_el:
-                    impact_text = (await impact_el.get_text()).strip()
-            except Exception as e:
-                logger.warning("Error reading impact cell", exc_info=True)
-                impact_text = (await (impact_el.get_text() if impact_el else "")).strip() if impact_el else ""
-
-            # parse time -> event_dt (same logic as your original parser)
-            event_dt = current_day
-            time_lower = time_text.lower()
-            if "day" in time_lower and "all day" in time_lower:
-                event_dt = event_dt.replace(hour=0, minute=0, second=0)
-            elif "day" in time_lower:
-                event_dt = event_dt.replace(hour=23, minute=59, second=59)
-            elif "data" in time_lower:
-                event_dt = event_dt.replace(hour=0, minute=0, second=1)
-            else:
-                m = re.search(r'(\d{1,2}):(\d{2})\s*(am|pm)?', time_lower)
-                if m:
-                    hh = int(m.group(1)); mm = int(m.group(2)); ampm = m.group(3)
-                    if ampm:
-                        ampm = ampm.lower()
-                        if ampm == 'pm' and hh < 12: hh += 12
-                        if ampm == 'am' and hh == 12: hh = 0
-                    try:
-                        event_dt = event_dt.replace(hour=hh, minute=mm, second=0)
-                    except Exception:
-                        event_dt = event_dt.replace(hour=0, minute=0, second=0)
-
-            # detail extraction using element handles (best-effort)
-            detail_str = ""
-            if scrape_details:
-                try:
-                    # check existing_df
-                    if existing_df is not None:
-                        matched = existing_df[
-                            (existing_df["DateTime"] == event_dt.isoformat()) &
-                            (existing_df["Currency"].str.strip() == currency_text) &
-                            (existing_df["Event"].str.strip() == event_text)
-                        ]
-                        if not matched.empty:
-                            existing_detail = str(matched.iloc[0]["Detail"]).strip() if pd.notnull(matched.iloc[0]["Detail"]) else ""
-                            if existing_detail:
-                                detail_str = existing_detail
-
-                    if not detail_str:
-                        open_link = await row.select('.//td[contains(@class,"calendar__detail")]/a')
-                        if open_link:
-                            try:
-                                await open_link.scroll_into_view()
-                            except Exception:
-                                pass
-                            await asyncio.sleep(0.25)
-                            try:
-                                await open_link.click()
-                            except Exception:
-                                logger.debug("click() on detail link failed (elements path)", exc_info=True)
-
-                            # try to pull detail via element selector
-                            try:
-                                detail_element = await page.select('//tr[contains(@class,"calendar__details--detail")]', timeout=3)
-                                detail_data = await parse_detail_table(detail_element)
-                                detail_str = detail_data_to_string(detail_data)
-                            except Exception:
-                                logger.debug("Couldn't read detail element after click (elements path)", exc_info=True)
-
-                            # try close
-                            try:
-                                close_link = await page.select('.//a[@title="Close Detail"]')
-                                close_link = await _normalize_element(close_link)
-                                if close_link:
-                                    try:
-                                        await close_link.click()
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                pass
-                except Exception:
-                    logger.debug("Detail extraction error (elements path)", exc_info=True)
-
-            data_list.append({
-                "DateTime": event_dt.isoformat(),
-                "Currency": currency_text,
-                "Impact": impact_text,
-                "Event": event_text,
-                "Actual": actual_text,
-                "Forecast": forecast_text,
-                "Previous": previous_text,
-                "Detail": detail_str
-            })
-
+        data_list = await extract_via_elements(
+            rows_result["nodes"], current_day, scrape_details, existing_df, page
+        )
     else:
-        # JS mode: rows_data is list of serializable dicts extracted via page.evaluate
-        logger.debug("JS mode: extracting rows data")
-        rows_data = rows_result["rows_data"]
-        for idx, rdict in enumerate(rows_data):
-            logger.debug("JS mode: %d data: %s", idx, rdict)
-            row_class = rdict.get("className", "") or ""
-            if "day-breaker" in row_class or "no-event" in row_class:
-                continue
-
-            time_text = (rdict.get("time") or "").strip()
-            currency_text = (rdict.get("currency") or "").strip()
-            event_text = (rdict.get("event") or "").strip()
-            actual_text = (rdict.get("actual") or "").strip()
-            forecast_text = (rdict.get("forecast") or "").strip()
-            previous_text = (rdict.get("previous") or "").strip()
-            impact_text = (rdict.get("impact") or "").strip()
-
-            # parse time into event_dt (same rules)
-            event_dt = current_day
-            time_lower = time_text.lower()
-            if "day" in time_lower and "all day" in time_lower:
-                event_dt = event_dt.replace(hour=0, minute=0, second=0)
-            elif "day" in time_lower:
-                event_dt = event_dt.replace(hour=23, minute=59, second=59)
-            elif "data" in time_lower:
-                event_dt = event_dt.replace(hour=0, minute=0, second=1)
-            else:
-                m = re.search(r'(\d{1,2}):(\d{2})\s*(am|pm)?', time_lower)
-                if m:
-                    hh = int(m.group(1)); mm = int(m.group(2)); ampm = m.group(3)
-                    if ampm:
-                        ampm = ampm.lower()
-                        if ampm == 'pm' and hh < 12: hh += 12
-                        if ampm == 'am' and hh == 12: hh = 0
-                    try:
-                        event_dt = event_dt.replace(hour=hh, minute=mm, second=0)
-                    except Exception:
-                        event_dt = event_dt.replace(hour=0, minute=0, second=0)
-
-            detail_str = ""
-            if scrape_details and rdict.get("hasDetail", False):
-                # check existing_df first
-                try:
-                    if existing_df is not None:
-                        matched = existing_df[
-                            (existing_df["DateTime"] == event_dt.isoformat()) &
-                            (existing_df["Currency"].str.strip() == currency_text) &
-                            (existing_df["Event"].str.strip() == event_text)
-                        ]
-                        if not matched.empty:
-                            existing_detail = str(matched.iloc[0]["Detail"]).strip() if pd.notnull(matched.iloc[0]["Detail"]) else ""
-                            if existing_detail:
-                                detail_str = existing_detail
-                    if not detail_str:
-                        # click the detail link for this row index via JS, then extract detail via JS
-                        # Inlining idx into JS string is safe here since idx is an integer
-                        js_click = f"""
-                        (() => {{
-                            const rows = Array.from(document.querySelectorAll('tr.calendar__row'));
-                            if (!rows || rows.length <= {idx}) return false;
-                            const link = rows[{idx}].querySelector('td.calendar__detail a');
-                            if (!link) return false;
-                            link.scrollIntoView();
-                            link.click();
-                            return true;
-                        }})();
-                        """
-                        try:
-                            clicked = await page.evaluate(js_click)
-                            if clicked:
-                                # wait for detail row to appear
-                                await asyncio.sleep(0.45)
-                                js_detail = r"""
-                                (() => {
-                                    const out = {};
-                                    const detailRow = document.querySelector('tr.calendar__details--detail');
-                                    if (!detailRow) return null;
-                                    const table = detailRow.querySelector('table.calendarspecs');
-                                    if (!table) return null;
-                                    Array.from(table.querySelectorAll('tr')).forEach(tr => {
-                                        const tds = tr.querySelectorAll('td');
-                                        if (tds.length >= 2) {
-                                            const k = (tds[0].innerText || '').trim();
-                                            const v = (tds[1].innerText || '').trim();
-                                            if (k) out[k] = v;
-                                        }
-                                    });
-                                    return out;
-                                })();
-                                """
-                                detail_data = await page.evaluate(js_detail)
-                                if isinstance(detail_data, dict):
-                                    detail_str = detail_data_to_string(detail_data)
-                                # try close
-                                try:
-                                    await page.evaluate("""() => { const c = document.querySelector('a[title="Close Detail"]'); if (c){ c.click(); return true } return false }""")
-                                except Exception:
-                                    pass
-                        except Exception:
-                            logger.debug("JS detail click/extract failed for idx %d", idx, exc_info=True)
-                except Exception:
-                    logger.debug("Error checking existing_df or extracting detail (js path)", exc_info=True)
-
-            data_list.append({
-                "DateTime": event_dt.isoformat(),
-                "Currency": currency_text,
-                "Impact": impact_text,
-                "Event": event_text,
-                "Actual": actual_text,
-                "Forecast": forecast_text,
-                "Previous": previous_text,
-                "Detail": detail_str
-            })
+        # JS mode
+        data_list = await extract_via_javascript(
+            rows_result["rows_data"], current_day, scrape_details, existing_df, page
+        )
 
     # Done
     return pd.DataFrame(data_list)
