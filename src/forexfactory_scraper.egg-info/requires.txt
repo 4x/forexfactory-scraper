@@ -1,4 +1,3 @@
-selenium
 nodriver
 python-dateutil
 tzdata

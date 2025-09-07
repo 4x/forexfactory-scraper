@@ -5,9 +5,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import nodriver as uc
 from .utils.csv_util import ensure_csv_header, read_existing_data, merge_new_data, write_data_to_csv
-
-from forex_common import Currency
-from .event import CalendarEvent, parse_rows, parse_time_to_datetime
+from .event import parse_rows, parse_time_to_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +31,8 @@ async def scrape_range_pandas(from_date: datetime, to_date: datetime,
         current_day = from_date
         while current_day <= to_date:
             # logger.info(f"Scraping day {current_day.strftime('%Y-%m-%d')}")
-            df_new = await scrape_day(page, current_day, existing_df, scrape_details=scrape_details)
+            df_new = await scrape_day(page, current_day, existing_df,
+                                      scrape_details=scrape_details)
 
             if not df_new.empty:
                 merged_df = merge_new_data(existing_df, df_new)
@@ -87,18 +86,6 @@ async def scrape_day(page, the_date: datetime, existing_df: pd.DataFrame, scrape
     df_day_new = await parse_calendar_day(page, the_date,
         scrape_details=scrape_details, existing_df=existing_df)
     return df_day_new
-
-def detail_data_to_string(detail_data: dict) -> str:
-    """
-    Convert dictionary from parse_detail_table() into a single string for CSV storage.
-    Replace newlines or excessive whitespaces with space.
-    """
-    parts = []
-    for k, v in detail_data.items():
-        k_clean = re.sub(r'\s+', ' ', k).strip()
-        v_clean = re.sub(r'\s+', ' ', v).strip()
-        parts.append(f"{k_clean}: {v_clean}")
-    return " | ".join(parts)
 
 # --------------------
 # Main day parser
@@ -389,6 +376,19 @@ async def parse_event_details(page, row_or_index, event_dt: datetime, currency_t
     Returns:
         Detail string or empty string if no details found
     """
+
+    def _detail_data_to_string(detail_data: dict) -> str:
+        """
+        Convert dictionary from parse_detail_table() into a single string for CSV storage.
+        Replace newlines or excessive whitespaces with space.
+        """
+        parts = []
+        for k, v in detail_data.items():
+            k_clean = re.sub(r'\s+', ' ', k).strip()
+            v_clean = re.sub(r'\s+', ' ', v).strip()
+            parts.append(f"{k_clean}: {v_clean}")
+        return " | ".join(parts)
+
     detail_str = ""
     
     try:
@@ -422,7 +422,7 @@ async def parse_event_details(page, row_or_index, event_dt: datetime, currency_t
                 try:
                     detail_element = await page.select('//tr[contains(@class,"calendar__details--detail")]', timeout=3)
                     detail_data = await parse_detail_table(detail_element)
-                    detail_str = detail_data_to_string(detail_data)
+                    detail_str = _detail_data_to_string(detail_data)
                 except Exception:
                     logger.debug("Couldn't read detail element after click (elements path)", exc_info=True)
 
@@ -477,7 +477,7 @@ async def parse_event_details(page, row_or_index, event_dt: datetime, currency_t
                     """
                     detail_data = await page.evaluate(js_detail)
                     if isinstance(detail_data, dict):
-                        detail_str = detail_data_to_string(detail_data)
+                        detail_str = _detail_data_to_string(detail_data)
                     # Close detail panel
                     try:
                         await page.evaluate("""() => { const c = document.querySelector('a[title="Close Detail"]'); if (c){ c.click(); return true } return false }""")

@@ -9,8 +9,8 @@ from forexfactory.utils.logging import configure_logging
 async def main():
     configure_logging()
     logger = logging.getLogger(__name__)
-    logging.getLogger("nodriver").setLevel(logging.WARNING)
-    logging.getLogger("selenium").setLevel(logging.WARNING)
+    logging.getLogger("nodriver").setLevel(logging.WARNING) # way too verbose
+    # logging.getLogger("selenium").setLevel(logging.WARNING)
     logging.getLogger("pandas").setLevel(logging.WARNING)
     logging.getLogger("websockets").setLevel(logging.WARNING) # way too verbose
 
