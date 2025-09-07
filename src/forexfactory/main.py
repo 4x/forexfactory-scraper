@@ -12,14 +12,18 @@ async def main():
     logging.getLogger("nodriver").setLevel(logging.WARNING)
     logging.getLogger("selenium").setLevel(logging.WARNING)
     logging.getLogger("pandas").setLevel(logging.WARNING)
+    logging.getLogger("websockets").setLevel(logging.WARNING) # way too verbose
 
     today = datetime.today()
-    parser = argparse.ArgumentParser(description="Forex Factory Scraper (Incremental + pandas)")
+    parser = argparse.ArgumentParser(description=
+        "Forex Factory Scraper (Incremental + pandas)")
     parser.add_argument('--start', type=str, required=True,
         help='Start date (YYYY-MM-DD)', default=today.strftime('%Y-%m-%d'))
     parser.add_argument('--end', type=str, required=True,
-        help='End date (YYYY-MM-DD)', default=(today+timedelta(weeks=1)).strftime('%Y-%m-%d'))
-    parser.add_argument('--csv', type=str, default="forex_factory_cache.csv", help='Output CSV file')
+        help='End date (YYYY-MM-DD)',
+        default=(today+timedelta(weeks=1)).strftime('%Y-%m-%d'))
+    parser.add_argument('--csv', type=str, default="forex_factory_cache.csv",
+        help='Output CSV file')
     parser.add_argument('--tz', type=str,
         default=datetime.now().astimezone().tzname(), help='Timezone')
     parser.add_argument('--details', action='store_false', default=False,

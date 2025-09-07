@@ -7,7 +7,7 @@ import nodriver as uc
 from .utils.csv_util import ensure_csv_header, read_existing_data, merge_new_data, write_data_to_csv
 
 from forex_common import Currency
-from .event import CalendarEvent, parse_rows
+from .event import CalendarEvent, parse_rows, parse_time_to_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ async def scrape_range_pandas(from_date: datetime, to_date: datetime,
     try:
         current_day = from_date
         while current_day <= to_date:
-            logger.info(f"Scraping day {current_day.strftime('%Y-%m-%d')}...")
+            # logger.info(f"Scraping day {current_day.strftime('%Y-%m-%d')}")
             df_new = await scrape_day(page, current_day, existing_df, scrape_details=scrape_details)
 
             if not df_new.empty:
@@ -61,11 +61,13 @@ async def scrape_range_pandas(from_date: datetime, to_date: datetime,
                         # If the call returned a coroutine, await it
                         if asyncio.iscoroutine(res):
                             await res
-                        logger.info(f"[nodriver]] {name} called successfully.")
+                        logger.info(f"[nodriver] {name} called successfully.")
                         return
                     except Exception as exc:
-                        logger.warning(f"Attempt to call nodriver.{name}() raised: {exc}")
-                logger.warning("No supported shutdown method succeeded for WebDriver instance.")
+                        logger.warning(f"Attempt to call nodriver.{name}() \
+                                       raised: {exc}")
+                logger.warning(
+                "No supported shutdown method succeeded 4 WebDriver instance.")
 
             try:
                 await _try_call_shutdown(browser)
@@ -187,7 +189,7 @@ async def parse_calendar_day(page, the_date: datetime,
                     })();
                     """
                     rows_data = await page.evaluate(js)
-                    events = parse_rows(rows_data)
+                    events = parse_rows(rows_data, the_date)
 
                     for e in events:    logger.debug(e)
                     # logger.debug('JS evaluation:\n')
@@ -195,6 +197,7 @@ async def parse_calendar_day(page, the_date: datetime,
 
                     # if we have this list of CalendarEvents, we're good
                     if events:
+                        logger.debug(f"Found {len(events)} events via JS for {the_date.date()}")
                         return {"mode": "js", "rows_data": rows_data}
 
                     # if JS returned an array, use it
@@ -242,9 +245,18 @@ async def parse_calendar_day(page, the_date: datetime,
     # call helper
     try:
         rows_result = await _wait_for_calendar_table_and_get_rows(page, url)
+
+        # test if rows_result is a list of CalendarEvents
+        if not isinstance(rows_result, list) or len(rows_result) == 0:
+            logger.warning(f"Unexpected rows_result format for {the_date.date()}: {type(rows_result)}", exc_info=True)
+            return pd.DataFrame(columns=["DateTime", "Currency", "Impact", "Event",
+                "Actual", "Forecast", "Previous", "Detail"])
+        return rows_result
+
     except Exception as e:
         logger.warning(f"Extraction did not work for {the_date.date()}: {e}", exc_info=True)
-        return pd.DataFrame(columns=["DateTime", "Currency", "Impact", "Event", "Actual", "Forecast", "Previous", "Detail"])
+        return pd.DataFrame(columns=["DateTime", "Currency", "Impact", "Event",
+            "Actual", "Forecast", "Previous", "Detail"])
 
     # ----------------------------------------------------
     # Extract data using the appropriate mode
@@ -359,41 +371,6 @@ async def parse_detail_table(detail_element):
     except Exception as e:
         logger.error("Error parsing detail table: %s", e, exc_info=True)
     return detail_data
-
-
-def parse_time_to_datetime(time_text: str, base_date: datetime) -> datetime:
-    """
-    Shared time parsing logic for both extraction modes.
-    Converts ForexFactory time text to datetime object.
-    """
-    event_dt = base_date
-    time_lower = time_text.lower()
-    
-    if "day" in time_lower and "all day" in time_lower:
-        event_dt = event_dt.replace(hour=0, minute=0, second=0)
-    elif "day" in time_lower:
-        event_dt = event_dt.replace(hour=23, minute=59, second=59)
-    elif "data" in time_lower:
-        event_dt = event_dt.replace(hour=0, minute=0, second=1)
-    else:
-        m = re.search(r'(\d{1,2}):(\d{2})\s*(am|pm)?', time_lower)
-        if m:
-            hh = int(m.group(1))
-            mm = int(m.group(2))
-            ampm = m.group(3)
-            if ampm:
-                ampm = ampm.lower()
-                if ampm == 'pm' and hh < 12:
-                    hh += 12
-                if ampm == 'am' and hh == 12:
-                    hh = 0
-            try:
-                event_dt = event_dt.replace(hour=hh, minute=mm, second=0)
-            except Exception:
-                event_dt = event_dt.replace(hour=0, minute=0, second=0)
-    
-    return event_dt
-
 
 async def parse_event_details(page, row_or_index, event_dt: datetime, currency_text: str, 
                             event_text: str, existing_df, mode: str = "elements") -> str:
