@@ -1,13 +1,20 @@
 from dataclasses import dataclass
-import re
 from datetime import datetime
+from enum import Enum
 from forex_common import Currency
+import re
+
+class Impact(Enum):
+    LOW = 1
+    MEDIUM = 2
+    HIGH = 3
+    UNKNOWN = 4 # safer than 0
 
 @dataclass
 class CalendarEvent:
     time: datetime
     currency: Currency
-    impact: str # Not sure I need any of the next ones
+    impact: Impact
     event: str 
     # actual: Optional[str] = None
     # forecast: Optional[str] = None
@@ -17,6 +24,16 @@ class CalendarEvent:
 
     # But would consider adding some `from_row` method? Not now!
     # Carrying time over from previous event will be challenging.
+
+def normalize_impact(text: str) -> Impact:
+    text = (text or "").lower()
+    if "high" in text:
+        return Impact.HIGH
+    elif "medium" in text:
+        return Impact.MEDIUM
+    elif "low" in text:
+        return Impact.LOW
+    return Impact.UNKNOWN
 
 def parse_rows(rows, base_date: datetime) -> list[CalendarEvent]:
     events = []
@@ -39,8 +56,8 @@ def parse_rows(rows, base_date: datetime) -> list[CalendarEvent]:
         events.append(CalendarEvent(
             time=dtime,
             currency=Currency(symbol=values.get("currency", "")),
-            impact=values.get("impact", ""),
-            event=values.get("event", ""),
+            impact=normalize_impact(values.get("impact", "")),
+            event=values.get("event", "")
             # actual=values.get("actual", ""),
             # forecast=values.get("forecast", ""),
             # previous=values.get("previous", ""),
