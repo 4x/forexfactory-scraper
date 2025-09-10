@@ -18,7 +18,22 @@
             "request": "launch",
             "module": "forexfactory.main",
             "justMyCode": true,
-            "args": ["--start", "2025-09-07", "--end", "2025-09-07"]
+            "args": ["--start", "2025-09-10", "--end", "2025-09-10"]
+        },
+        {
+            "name": "testScrape",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "test_scrape_range",
+            "justMyCode": true
+        },
+        {
+            "name": "scraper",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "forexfactory.scraper",
+            "justMyCode": true,
+            "args": ["--start", "2025-09-10", "--end", "2025-09-10"]
         },
         {
             "name": "Run tests",

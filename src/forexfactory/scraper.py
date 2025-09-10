@@ -9,12 +9,15 @@ from .event import parse_rows, parse_time_to_datetime
 
 logger = logging.getLogger(__name__)
 
+# main -> incremental.scrape_incremental -> scrape_range_pandas -> scrape_day ->
+# parse_calendar_day
 # --------------------
 # Wrappers / orchestration
 # --------------------
 
 async def scrape_range_pandas(from_date: datetime, to_date: datetime,
-    output_csv: str, tzname: str, scrape_details: bool = False):
+    output_csv: str, tzname: str = 'US/Pacific', scrape_details: bool = False):
+    # or is it "America/Los_Angeles"? Doesn't seem to be used
     '''Entry to point to module (from main -> incremental)'''
 
     ensure_csv_header(output_csv)
@@ -30,7 +33,6 @@ async def scrape_range_pandas(from_date: datetime, to_date: datetime,
     try:
         current_day = from_date
         while current_day <= to_date:
-            # logger.info(f"Scraping day {current_day.strftime('%Y-%m-%d')}")
             df_new = await scrape_day(page, current_day, existing_df,
                                       scrape_details=scrape_details)
 
@@ -638,3 +640,7 @@ async def extract_via_javascript(rows_data, current_day: datetime, scrape_detail
         })
     
     return data_list
+
+# if __name__ == "__main__":
+#     uc.loop().run_until_complete(scrape_range_pandas(from_date, to_date,
+#     output_csv, tzname='US/Pacific', scrape_details=False))
