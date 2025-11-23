@@ -26,7 +26,7 @@ def events_to_dataframe(events: list[CalendarEvent]) -> pd.DataFrame:
     for e in events:
         data.append({
             "DateTime": e.time.isoformat(),
-            "Currency": e.currency.symbol if hasattr(e.currency, 'symbol') else str(e.currency),
+            "Currency": e.currency,  # Keep as Currency object
             "Impact": e.impact.name if e.impact != Impact.UNKNOWN else "",
             "Event": e.event,
             "Actual": e.actual or "",
@@ -639,6 +639,7 @@ async def extract_via_elements(rows, current_day: datetime, scrape_details: bool
     
     return data_list
 
+
 def _detect_timezone_offset(header_time: str) -> timezone:
     """
     Detect timezone offset by comparing ForexFactory header time to system time.
@@ -776,9 +777,9 @@ async def extract_via_javascript(rows_data, current_day: datetime, scrape_detail
 
         # Create Currency object
         try:
-            currency = Currency(symbol=currency_text) if currency_text else Currency(symbol="USD")
+            currency = Currency(symbol=currency_text) if currency_text else Currency(symbol="UNK")
         except Exception:
-            currency = Currency(symbol="USD")
+            currency = Currency(symbol="EXC")
 
         # Create CalendarEvent
         event = CalendarEvent(

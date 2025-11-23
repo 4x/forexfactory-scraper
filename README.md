@@ -62,16 +62,16 @@ df = await scrape_range_pandas(
 
 The returned DataFrame has these columns:
 
-| Column | Type | Description |
-|--------|------|-------------|
-| DateTime | str | ISO format with timezone (e.g., `2025-11-24T08:30:00-05:00`) |
-| Currency | str | Currency code (e.g., `USD`, `EUR`) |
-| Impact | str | `HIGH`, `MEDIUM`, `LOW`, `HOLIDAY`, or empty |
-| Event | str | Event name |
-| Actual | str | Actual value (empty for future events) |
-| Forecast | str | Forecasted value |
-| Previous | str | Previous value |
-| Detail | str | Additional details (if `scrape_details=True`) |
+| Column   | Type     | Description                                                  |
+| -------- | -------- | ------------------------------------------------------------ |
+| DateTime | str      | ISO format with timezone (e.g., `2025-11-24T08:30:00-05:00`) |
+| Currency | Currency | `Currency` object from forex_common                          |
+| Impact   | str      | `HIGH`, `MEDIUM`, `LOW`, `HOLIDAY`, or empty                 |
+| Event    | str      | Event name                                                   |
+| Actual   | str      | Actual value (empty for future events)                       |
+| Forecast | str      | Forecasted value                                             |
+| Previous | str      | Previous value                                               |
+| Detail   | str      | Additional details (if `scrape_details=True`)                |
 
 ### Using CalendarEvent objects
 
@@ -124,6 +124,7 @@ python -m forexfactory.main --start 2025-11-24 --end 2025-11-30 --csv events.csv
 ```
 
 Options:
+
 - `--start`: Start date (YYYY-MM-DD) **required**
 - `--end`: End date (YYYY-MM-DD) **required**
 - `--csv`: Output CSV file (default: forex_factory_cache.csv)
