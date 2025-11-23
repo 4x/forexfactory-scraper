@@ -1,41 +1,40 @@
+"""CLI entry point for ForexFactory scraper."""
 import logging
 import argparse
 from datetime import datetime, timedelta
-from dateutil.tz import gettz
-import nodriver as uc
-from .incremental import scrape_incremental
-from forexfactory.utils.logging import configure_logging
+import asyncio
+from .scraper import scrape_range_pandas
+from .utils.logging import configure_logging
+
 
 async def main():
+    """Main CLI entry point."""
     configure_logging()
     logger = logging.getLogger(__name__)
-    logging.getLogger("nodriver").setLevel(logging.WARNING) # way too verbose
-    # logging.getLogger("pandas").setLevel(logging.WARNING)
-    logging.getLogger("websockets").setLevel(logging.WARNING) # way too verbose
+    logging.getLogger("nodriver").setLevel(logging.WARNING)
+    logging.getLogger("websockets").setLevel(logging.WARNING)
 
     today = datetime.today()
-    parser = argparse.ArgumentParser(description=
-        "Forex Factory Scraper (Incremental + pandas)")
+    parser = argparse.ArgumentParser(description="ForexFactory Calendar Scraper")
     parser.add_argument('--start', type=str, required=True,
-        help='Start date (YYYY-MM-DD)', default=today.strftime('%Y-%m-%d'))
+        help='Start date (YYYY-MM-DD)')
     parser.add_argument('--end', type=str, required=True,
-        help='End date (YYYY-MM-DD)',
-        default=(today+timedelta(weeks=1)).strftime('%Y-%m-%d'))
+        help='End date (YYYY-MM-DD)')
     parser.add_argument('--csv', type=str, default="forex_factory_cache.csv",
         help='Output CSV file')
-    parser.add_argument('--tz', type=str,
-        default=datetime.now().astimezone().tzname(), help='Timezone')
-    parser.add_argument('--details', action='store_false', default=False,
-        help='Scrape details or not')
+    parser.add_argument('--details', action='store_true', default=False,
+        help='Scrape event details')
 
     args = parser.parse_args()
 
-    tz = gettz(args.tz)
-    from_date = datetime.fromisoformat(args.start).replace(tzinfo=tz)
-    to_date = datetime.fromisoformat(args.end).replace(tzinfo=tz)
+    from_date = datetime.fromisoformat(args.start)
+    to_date = datetime.fromisoformat(args.end)
 
-    await scrape_incremental(from_date, to_date,
-        args.csv, tzname=args.tz, scrape_details=args.details)
+    logger.info(f"Scraping {args.start} to {args.end}")
+    df = await scrape_range_pandas(from_date, to_date,
+        output_csv=args.csv, scrape_details=args.details)
+    logger.info(f"Scraped {len(df)} events")
+
 
 if __name__ == "__main__":
-    uc.loop().run_until_complete(main())
+    asyncio.run(main())
