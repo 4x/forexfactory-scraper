@@ -586,10 +586,27 @@ async def extract_via_javascript(rows_data, current_day: datetime, scrape_detail
     """
     logger.debug("Extracting rows using JavaScript data")
     data_list = []
-    
-    for idx, rdict in enumerate(rows_data):
-        logger.debug("JS mode row %d data: %s", idx, rdict)
-        
+
+    def _convert_js_result(obj):
+        """Convert nodriver's nested JS result format to flat dict."""
+        if isinstance(obj, dict):
+            if obj.get("type") == "object" and "value" in obj:
+                # Convert [['key', {'type': 'string', 'value': 'val'}], ...] to {'key': 'val'}
+                return {k: _convert_js_result(v) for k, v in obj["value"]}
+            elif "type" in obj and "value" in obj:
+                return obj["value"]
+            else:
+                return {k: _convert_js_result(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [_convert_js_result(item) for item in obj]
+        return obj
+
+    for idx, raw_rdict in enumerate(rows_data):
+        logger.debug("JS mode row %d data: %s", idx, raw_rdict)
+
+        # Convert nested format to flat dict
+        rdict = _convert_js_result(raw_rdict)
+
         row_class = rdict.get("className", "") or ""
         if "day-breaker" in row_class or "no-event" in row_class:
             continue
