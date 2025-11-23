@@ -601,6 +601,8 @@ async def extract_via_javascript(rows_data, current_day: datetime, scrape_detail
             return [_convert_js_result(item) for item in obj]
         return obj
 
+    last_time_text = ""  # Track last seen time for inherited times
+
     for idx, raw_rdict in enumerate(rows_data):
         logger.debug("JS mode row %d data: %s", idx, raw_rdict)
 
@@ -619,6 +621,24 @@ async def extract_via_javascript(rows_data, current_day: datetime, scrape_detail
         forecast_text = (rdict.get("forecast") or "").strip()
         previous_text = (rdict.get("previous") or "").strip()
         impact_text = (rdict.get("impact") or "").strip()
+
+        # Inherit time from previous event if empty or tentative
+        if time_text and time_text.lower() != "tentative":
+            last_time_text = time_text
+        elif last_time_text:
+            time_text = last_time_text
+
+        # Normalize impact to just High/Medium/Low
+        if "high" in impact_text.lower():
+            impact_text = "High"
+        elif "medium" in impact_text.lower():
+            impact_text = "Medium"
+        elif "low" in impact_text.lower():
+            impact_text = "Low"
+        elif "non-economic" in impact_text.lower():
+            impact_text = "Holiday"
+        else:
+            impact_text = ""
 
         # Parse time to datetime
         event_dt = parse_time_to_datetime(time_text, current_day)
