@@ -234,14 +234,6 @@ async def parse_calendar_day(page, the_date: datetime,
     # call helper
     try:
         rows_result = await _wait_for_calendar_table_and_get_rows(page, url)
-
-        # test if rows_result is a list of CalendarEvents
-        if not isinstance(rows_result, list) or len(rows_result) == 0:
-            logger.warning(f"Unexpected rows_result format for {the_date.date()}: {type(rows_result)}", exc_info=True)
-            return pd.DataFrame(columns=["DateTime", "Currency", "Impact", "Event",
-                "Actual", "Forecast", "Previous", "Detail"])
-        return rows_result
-
     except Exception as e:
         logger.warning(f"Extraction did not work for {the_date.date()}: {e}", exc_info=True)
         return pd.DataFrame(columns=["DateTime", "Currency", "Impact", "Event",
@@ -256,7 +248,7 @@ async def parse_calendar_day(page, the_date: datetime,
         if "nodes" in rows_result else len(rows_result.get("rows_data", [])),
         the_date.date(),
         rows_result["mode"])
-    
+
     if rows_result["mode"] == "elements":
         data_list = await extract_via_elements(rows_result["nodes"],
             current_day, scrape_details, existing_df, page)
@@ -282,7 +274,6 @@ async def _normalize_element(el):
         pass
     return el
 
-
 async def safe_select(element, xpath, timeout=None):
     """Safe wrapper for element.select() that returns a single normalized element or None."""
     try:
@@ -290,7 +281,6 @@ async def safe_select(element, xpath, timeout=None):
         return await _normalize_element(node)
     except Exception:
         return None
-
 
 async def safe_select_all(element, xpath):
     """Safe wrapper for element.select_all() that returns list (maybe empty)."""
@@ -302,7 +292,6 @@ async def safe_select_all(element, xpath):
     except Exception:
         return []
 
-
 async def safe_text(element):
     """Return stripped text or empty string. Accepts element or list."""
     try:
@@ -313,7 +302,6 @@ async def safe_text(element):
         return txt.strip() if txt else ""
     except Exception:
         return ""
-
 
 async def safe_attribute(element, attr_name):
     """Return attribute value or empty string. Accepts element or list."""
@@ -493,7 +481,6 @@ async def parse_event_details(page, row_or_index, event_dt: datetime, currency_t
     
     return detail_str
 
-
 async def extract_via_elements(rows, current_day: datetime, scrape_details: bool, 
                              existing_df, page) -> list:
     """
@@ -581,7 +568,6 @@ async def extract_via_elements(rows, current_day: datetime, scrape_details: bool
         })
     
     return data_list
-
 
 async def extract_via_javascript(rows_data, current_day: datetime, scrape_details: bool,
                                 existing_df, page) -> list:
