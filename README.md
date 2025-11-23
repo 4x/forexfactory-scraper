@@ -32,42 +32,43 @@ A robust and flexible web scraper for [Forex Factory](https://www.forexfactory.c
 ### Step-by-Step Installation Guide
 
 1. **Clone the Repository**
-
+   
    ```bash
    git clone https://github.com/yourusername/forexfactory_scraper.git
    cd forexfactory_scraper
    ```
 
 2. **Create a Virtual Environment (Optional but Recommended)**
-
+   
    ```bash
    python -m venv venv
    ```
-
+   
    - **Activate the Virtual Environment:**
      - **Windows:**
+       
        ```bash
        venv\Scripts\activate
        ```
      - **macOS/Linux:**
+       
        ```bash
        source venv/bin/activate
        ```
 
 3. **Install Dependencies**
-
+   
    Ensure you have `pip` updated:
-
+   
    ```bash
    pip install --upgrade pip
    ```
-
+   
    Install required packages:
-
+   
    ```bash
    pip install -r requirements.txt
    ```
-
 
 ## Usage
 
@@ -92,19 +93,19 @@ python -m src.forexfactory.main --start YYYY-MM-DD --end YYYY-MM-DD [--csv OUTPU
 ### Examples
 
 1. **Scrape Events from March 21, 2024, to March 25, 2024, Including Details**
-
+   
    ```bash
    python -m src.forexfactory.main --start 2024-03-21 --end 2024-03-25 --csv forex_factory_cache.csv --tz Asia/Tehran --details
    ```
 
 2. **Scrape Events from January 1, 2024, to January 31, 2024, Without Details**
-
+   
    ```bash
    python -m src.forexfactory.main --start 2024-01-01 --end 2024-01-31 --csv january_events.csv --tz Asia/Tehran
    ```
 
 3. **Scrape Events from February 15, 2024, to February 20, 2024, Saving to a Custom CSV File**
-
+   
    ```bash
    python -m src.forexfactory.main --start 2024-02-15 --end 2024-02-20 --csv feb_events.csv --tz Asia/Tehran
    ```
@@ -147,45 +148,50 @@ This command performs the same scraping without fetching detailed event specific
 ### Common Issues and Solutions
 
 1. **`StaleElementReferenceException` Errors**
-
+   
    **Cause:** The web page's DOM has changed, making the reference to the web element invalid.
-
+   
    **Solution:**
+   
    - Increase the wait time using `WebDriverWait`.
    - Re-fetch the web element after certain actions.
    - Implement retry mechanisms.
 
 2. **CAPTCHA or Cloudflare Challenges**
-
+   
    **Cause:** Forex Factory may employ CAPTCHA or Cloudflare protection to prevent automated scraping.
-
+   
    **Solution:**
+   
    - Use `undetected-chromedriver` to bypass some protections.
    - Implement delays between requests to mimic human behavior.
    - Use proxies if necessary.
    - Be mindful of the scraping rate to avoid IP bans.
 
 3. **Incorrect Date Parsing**
-
+   
    **Cause:** Mismatch between the date format in the CSV and the expected format in the script.
-
+   
    **Solution:**
+   
    - Ensure that dates in the CSV are in ISO format (`YYYY-MM-DDTHH:MM:SS`).
    - Modify the `get_last_datetime_from_csv` function if your date format differs.
 
 4. **Missing or Incorrect XPath Selectors**
-
+   
    **Cause:** Changes in the Forex Factory website structure leading to incorrect XPath selectors.
-
+   
    **Solution:**
+   
    - Verify the current structure of the Forex Factory website.
    - Update XPath selectors in the scraper accordingly.
 
 5. **Browser Driver Issues**
-
+   
    **Cause:** Incompatible or outdated ChromeDriver versions.
-
+   
    **Solution:**
+   
    - Ensure that `undetected-chromedriver` is up to date.
    - Verify that Google Chrome is updated to the latest version.
 
@@ -208,31 +214,35 @@ Contributions are welcome! If you encounter bugs or have suggestions for improve
 1. **Fork the Repository**
 
 2. **Create a Feature Branch**
-
+   
    ```bash
    git checkout -b feature/YourFeatureName
    ```
 
 3. **Commit Your Changes**
-
+   
    ```bash
    git commit -m "Add your message here"
    ```
 
 4. **Push to the Branch**
-
+   
    ```bash
    git push origin feature/YourFeatureName
    ```
 
 5. **Open a Pull Request**
-
+   
    Provide a clear description of your changes and the problem they solve.
 
 ## License
+
 This project is licensed under the [MIT License](LICENSE).
 
 ---
 
 **Disclaimer:** This scraper is intended for personal use and educational purposes only. Ensure compliance with Forex Factory's [Terms of Service](https://www.forexfactory.com/disclaimer) and avoid violating any usage policies. Use responsibly.
+
+```
+
 ```

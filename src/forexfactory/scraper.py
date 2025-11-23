@@ -2,10 +2,11 @@ import asyncio
 import re
 import logging
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import nodriver as uc
+from forex_common import Currency
 from .utils.csv_util import ensure_csv_header, read_existing_data, merge_new_data, write_data_to_csv
-from .event import parse_rows, parse_time_to_datetime
+from .event import CalendarEvent, Impact, normalize_impact, parse_time_to_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -15,38 +16,74 @@ logger = logging.getLogger(__name__)
 # Wrappers / orchestration
 # --------------------
 
-async def scrape_range_pandas(from_date: datetime, to_date: datetime,
-    output_csv: str, tzname: str = 'US/Pacific', scrape_details: bool = False):
-    # or is it "America/Los_Angeles"? Doesn't seem to be used
-    '''Entry to point to module (from main -> incremental)'''
+def events_to_dataframe(events: list[CalendarEvent]) -> pd.DataFrame:
+    """Convert list of CalendarEvents to DataFrame."""
+    if not events:
+        return pd.DataFrame(columns=["DateTime", "Currency", "Impact", "Event",
+                                     "Actual", "Forecast", "Previous", "Detail"])
 
-    ensure_csv_header(output_csv)
-    existing_df = read_existing_data(output_csv)
+    data = []
+    for e in events:
+        data.append({
+            "DateTime": e.time.isoformat(),
+            "Currency": e.currency.symbol if hasattr(e.currency, 'symbol') else str(e.currency),
+            "Impact": e.impact.name if e.impact != Impact.UNKNOWN else "",
+            "Event": e.event,
+            "Actual": e.actual or "",
+            "Forecast": e.forecast or "",
+            "Previous": e.previous or "",
+            "Detail": e.detail or ""
+        })
+
+    return pd.DataFrame(data)
+
+
+async def scrape_range_pandas(from_date: datetime, to_date: datetime,
+    output_csv: str = None, scrape_details: bool = False) -> pd.DataFrame:
+    """
+    Scrape ForexFactory calendar for date range and return DataFrame of CalendarEvents.
+
+    Args:
+        from_date: Start date
+        to_date: End date
+        output_csv: Optional CSV file to save results
+        scrape_details: Whether to scrape event details
+
+    Returns:
+        DataFrame with columns: DateTime, Currency, Impact, Event, Actual, Forecast, Previous, Detail
+        DateTime is timezone-aware in local time.
+    """
+    if output_csv:
+        ensure_csv_header(output_csv)
+        existing_df = read_existing_data(output_csv)
+    else:
+        existing_df = pd.DataFrame(columns=["DateTime", "Currency", "Impact", "Event",
+                                            "Actual", "Forecast", "Previous", "Detail"])
 
     browser = await uc.start()
     page = await browser.get('about:blank')
 
-    total_new = 0
+    all_events: list[CalendarEvent] = []
     day_count = (to_date - from_date).days + 1
     logger.info(f"Scraping from {from_date.date()} to {to_date.date()} for {day_count} days.")
 
     try:
         current_day = from_date
         while current_day <= to_date:
-            df_new = await scrape_day(page, current_day, existing_df,
+            events = await scrape_day(page, current_day, existing_df,
                                       scrape_details=scrape_details)
 
-            if not df_new.empty:
-                merged_df = merge_new_data(existing_df, df_new)
-                new_rows = len(merged_df) - len(existing_df)
-                if new_rows > 0:
-                    logger.info(f"Added/Updated {new_rows} rows for {current_day.date()}")
-                    logger.info(merged_df.tail(new_rows).to_string(index=False))
-                existing_df = merged_df
-                total_new += max(0, new_rows)
+            if events:
+                all_events.extend(events)
+                df_new = events_to_dataframe(events)
 
-                # Save updated data to CSV after processing the day's data.
-                write_data_to_csv(existing_df, output_csv)
+                if output_csv:
+                    merged_df = merge_new_data(existing_df, df_new)
+                    new_rows = len(merged_df) - len(existing_df)
+                    if new_rows > 0:
+                        logger.info(f"Added/Updated {new_rows} rows for {current_day.date()}")
+                    existing_df = merged_df
+                    write_data_to_csv(existing_df, output_csv)
 
             current_day += timedelta(days=1)
     finally:
@@ -77,17 +114,25 @@ async def scrape_range_pandas(from_date: datetime, to_date: datetime,
             finally:
                 browser = None
 
-    # Final save (if needed)
-    write_data_to_csv(existing_df, output_csv)
-    logger.info(f"Done. Total new/updated rows: {total_new}")
+    logger.info(f"Done. Total events scraped: {len(all_events)}")
 
-async def scrape_day(page, the_date: datetime, existing_df: pd.DataFrame, scrape_details=False) -> pd.DataFrame:
+    # Return DataFrame of all events
+    return events_to_dataframe(all_events)
+
+
+async def scrape_day(page, the_date: datetime, existing_df: pd.DataFrame,
+                     scrape_details=False) -> list[CalendarEvent]:
     """
-    Re-scrape a single day, using existing_df to check for already-saved details.
+    Scrape a single day, returning list of CalendarEvents.
     """
-    df_day_new = await parse_calendar_day(page, the_date,
+    events = await parse_calendar_day(page, the_date,
         scrape_details=scrape_details, existing_df=existing_df)
-    return df_day_new
+
+    # Handle case where parse_calendar_day returns empty DataFrame on error
+    if isinstance(events, pd.DataFrame):
+        return []
+
+    return events
 
 # --------------------
 # Main day parser
@@ -149,7 +194,11 @@ async def parse_calendar_day(page, the_date: datetime,
                     js = r"""
                     (() => {
                         const rows = Array.from(document.querySelectorAll('tr.calendar__row'));
-                        return rows.map(r => {
+                        // Extract header time for timezone detection
+                        const headerTimeEl = document.querySelector('.calendar__header .calendar__time');
+                        const headerTime = headerTimeEl ? headerTimeEl.innerText.trim() : '';
+
+                        const rowsData = rows.map(r => {
                             const cls = r.className || '';
                             const q = sel => {
                                 const el = r.querySelector(sel);
@@ -175,23 +224,43 @@ async def parse_calendar_day(page, the_date: datetime,
                                 hasDetail: !!r.querySelector('td.calendar__detail a')
                             };
                         });
+                        return { rows: rowsData, headerTime: headerTime };
                     })();
                     """
-                    rows_data = await page.evaluate(js)
-                    events = parse_rows(rows_data, the_date)
+                    result = await page.evaluate(js)
+                    logger.debug(f"JS evaluate result type: {type(result)}, first 200 chars: {str(result)[:200]}")
 
-                    for e in events:    logger.debug(e)
-                    # logger.debug('JS evaluation:\n')
-                    # logger.debug(rows_data)
+                    # Handle nested format from nodriver
+                    # nodriver returns JS objects as lists of [key, value] pairs
+                    rows_data = []
+                    header_time = ""
 
-                    # if we have this list of CalendarEvents, we're good
-                    if events:
-                        logger.debug(f"Found {len(events)} events via JS for {the_date.date()}")
-                        return {"mode": "js", "rows_data": rows_data}
+                    if isinstance(result, list) and result and isinstance(result[0], list):
+                        # Format: [['rows', {...}], ['headerTime', {...}]]
+                        result_dict = {k: v for k, v in result}
+                        rows_obj = result_dict.get("rows", {})
+                        header_obj = result_dict.get("headerTime", {})
 
-                    # if JS returned an array, use it
+                        # Extract rows array
+                        if isinstance(rows_obj, dict) and rows_obj.get("type") == "array":
+                            rows_data = rows_obj.get("value", [])
+                        elif isinstance(rows_obj, list):
+                            rows_data = rows_obj
+
+                        # Extract header time
+                        if isinstance(header_obj, dict) and "value" in header_obj:
+                            header_time = header_obj.get("value", "")
+                        elif isinstance(header_obj, str):
+                            header_time = header_obj
+                    elif isinstance(result, dict):
+                        rows_data = result.get("rows", [])
+                        header_time = result.get("headerTime", "")
+
+                    logger.debug(f"Header time from FF: {header_time}, rows count: {len(rows_data) if isinstance(rows_data, list) else 'N/A'}")
+
+                    # if JS returned rows, use it
                     if isinstance(rows_data, list) and len(rows_data) > 0:
-                        return {"mode": "js", "rows_data": rows_data}
+                        return {"mode": "js", "rows_data": rows_data, "header_time": header_time}
                     else:
                         logger.debug("JS did not return row list.")
                 except Exception as e2:
@@ -243,6 +312,7 @@ async def parse_calendar_day(page, the_date: datetime,
     # Extract data using the appropriate mode
     # ----------------------------------------------------
     current_day = the_date
+    header_time = rows_result.get("header_time", "")
     logger.debug("Found %d rows for %s using mode %s",
         len(rows_result.get("nodes", []))
         if "nodes" in rows_result else len(rows_result.get("rows_data", [])),
@@ -250,13 +320,13 @@ async def parse_calendar_day(page, the_date: datetime,
         rows_result["mode"])
 
     if rows_result["mode"] == "elements":
-        data_list = await extract_via_elements(rows_result["nodes"],
-            current_day, scrape_details, existing_df, page)
+        events = await extract_via_elements(rows_result["nodes"],
+            current_day, scrape_details, existing_df, page, header_time)
     else: # JS mode
-        data_list = await extract_via_javascript(rows_result["rows_data"],
-            current_day, scrape_details, existing_df, page)
+        events = await extract_via_javascript(rows_result["rows_data"],
+            current_day, scrape_details, existing_df, page, header_time)
 
-    return pd.DataFrame(data_list)
+    return events
 
 # --------------------
 # Helper utilities
@@ -481,8 +551,8 @@ async def parse_event_details(page, row_or_index, event_dt: datetime, currency_t
     
     return detail_str
 
-async def extract_via_elements(rows, current_day: datetime, scrape_details: bool, 
-                             existing_df, page) -> list:
+async def extract_via_elements(rows, current_day: datetime, scrape_details: bool,
+                             existing_df, page, header_time: str = "") -> list:
     """
     Extract calendar data using nodriver element handles.
     
@@ -569,23 +639,83 @@ async def extract_via_elements(rows, current_day: datetime, scrape_details: bool
     
     return data_list
 
+def _detect_timezone_offset(header_time: str) -> timezone:
+    """
+    Detect timezone offset by comparing ForexFactory header time to system time.
+
+    Args:
+        header_time: Time string from FF header (e.g., "2:45pm")
+
+    Returns:
+        timezone object representing the offset
+    """
+    if not header_time:
+        # Default to system local timezone
+        local_offset = datetime.now().astimezone().utcoffset()
+        return timezone(local_offset)
+
+    # Parse the header time
+    now = datetime.now()
+    m = re.search(r'(\d{1,2}):(\d{2})\s*(am|pm)?', header_time.lower())
+    if not m:
+        local_offset = now.astimezone().utcoffset()
+        return timezone(local_offset)
+
+    hh = int(m.group(1))
+    mm = int(m.group(2))
+    ampm = m.group(3)
+
+    if ampm:
+        if ampm == 'pm' and hh < 12:
+            hh += 12
+        if ampm == 'am' and hh == 12:
+            hh = 0
+
+    # Create FF time for today
+    ff_time = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+
+    # Compare to system time (round to nearest 15 min to handle network delays)
+    system_time = now.replace(second=0, microsecond=0)
+    diff_minutes = (ff_time - system_time).total_seconds() / 60
+
+    # Round to nearest 30 minutes for timezone offset
+    offset_hours = round(diff_minutes / 30) * 0.5
+
+    # FF time should be close to system time; if diff > 12 hours, FF is showing different day
+    if abs(offset_hours) > 12:
+        offset_hours = 0
+
+    # Get system's local offset and adjust
+    local_offset = now.astimezone().utcoffset()
+    local_hours = local_offset.total_seconds() / 3600
+
+    # The FF offset is: local_offset + difference
+    # But since FF displays in user's set timezone, we assume it matches local
+    return timezone(local_offset)
+
+
 async def extract_via_javascript(rows_data, current_day: datetime, scrape_details: bool,
-                                existing_df, page) -> list:
+                                existing_df, page, header_time: str = "") -> list[CalendarEvent]:
     """
     Extract calendar data using JavaScript evaluation results.
-    
+
     Args:
         rows_data: List of dictionaries from JavaScript evaluation
         current_day: Base date for the calendar day
         scrape_details: Whether to extract event details
         existing_df: DataFrame of existing data
         page: Browser page object
-    
+        header_time: Time from FF header for timezone detection
+
     Returns:
-        List of event dictionaries
+        List of CalendarEvent objects
     """
     logger.debug("Extracting rows using JavaScript data")
-    data_list = []
+    events: list[CalendarEvent] = []
+
+    # Detect timezone from header
+    tz = _detect_timezone_offset(header_time)
+    logger.debug(f"Using timezone: {tz}")
 
     def _convert_js_result(obj):
         """Convert nodriver's nested JS result format to flat dict."""
@@ -622,26 +752,19 @@ async def extract_via_javascript(rows_data, current_day: datetime, scrape_detail
         previous_text = (rdict.get("previous") or "").strip()
         impact_text = (rdict.get("impact") or "").strip()
 
+        # Skip rows without event name
+        if not event_text:
+            continue
+
         # Inherit time from previous event if empty or tentative
         if time_text and time_text.lower() != "tentative":
             last_time_text = time_text
         elif last_time_text:
             time_text = last_time_text
 
-        # Normalize impact to just High/Medium/Low
-        if "high" in impact_text.lower():
-            impact_text = "High"
-        elif "medium" in impact_text.lower():
-            impact_text = "Medium"
-        elif "low" in impact_text.lower():
-            impact_text = "Low"
-        elif "non-economic" in impact_text.lower():
-            impact_text = "Holiday"
-        else:
-            impact_text = ""
-
-        # Parse time to datetime
+        # Parse time to datetime and make timezone-aware
         event_dt = parse_time_to_datetime(time_text, current_day)
+        event_dt = event_dt.replace(tzinfo=tz)
 
         # Extract details if requested and available
         detail_str = ""
@@ -651,18 +774,26 @@ async def extract_via_javascript(rows_data, current_day: datetime, scrape_detail
                 existing_df, mode="js"
             )
 
-        data_list.append({
-            "DateTime": event_dt.isoformat(),
-            "Currency": currency_text,
-            "Impact": impact_text,
-            "Event": event_text,
-            "Actual": actual_text,
-            "Forecast": forecast_text,
-            "Previous": previous_text,
-            "Detail": detail_str
-        })
-    
-    return data_list
+        # Create Currency object
+        try:
+            currency = Currency(symbol=currency_text) if currency_text else Currency(symbol="USD")
+        except Exception:
+            currency = Currency(symbol="USD")
+
+        # Create CalendarEvent
+        event = CalendarEvent(
+            time=event_dt,
+            currency=currency,
+            impact=normalize_impact(impact_text),
+            event=event_text,
+            actual=actual_text or None,
+            forecast=forecast_text or None,
+            previous=previous_text or None,
+            detail=detail_str or None
+        )
+        events.append(event)
+
+    return events
 
 # if __name__ == "__main__":
 #     uc.loop().run_until_complete(scrape_range_pandas(from_date, to_date,

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from typing import Optional
 from forex_common import Currency
 import re
 
@@ -8,24 +9,23 @@ class Impact(Enum):
     LOW = 1
     MEDIUM = 2
     HIGH = 3
-    UNKNOWN = 4 # safer than 0
+    HOLIDAY = 4
+    UNKNOWN = 5
 
 @dataclass
 class CalendarEvent:
-    time: datetime
+    """Represents a single economic calendar event from ForexFactory."""
+    time: datetime  # Timezone-aware datetime
     currency: Currency
     impact: Impact
-    event: str 
-    # actual: Optional[str] = None
-    # forecast: Optional[str] = None
-    # previous: Optional[str] = None
-    # has_detail: bool = False
-    # class_name: Optional[str] = None
-
-    # But would consider adding some `from_row` method? Not now!
-    # Carrying time over from previous event will be challenging.
+    event: str
+    actual: Optional[str] = None
+    forecast: Optional[str] = None
+    previous: Optional[str] = None
+    detail: Optional[str] = None
 
 def normalize_impact(text: str) -> Impact:
+    """Convert impact text to Impact enum."""
     text = (text or "").lower()
     if "high" in text:
         return Impact.HIGH
@@ -33,6 +33,8 @@ def normalize_impact(text: str) -> Impact:
         return Impact.MEDIUM
     elif "low" in text:
         return Impact.LOW
+    elif "non-economic" in text or "holiday" in text:
+        return Impact.HOLIDAY
     return Impact.UNKNOWN
 
 def parse_rows(rows, base_date: datetime) -> list[CalendarEvent]:
