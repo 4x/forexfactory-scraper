@@ -153,8 +153,8 @@ async def parse_calendar_day(page, the_date: datetime,
     logger.debug(f"Scraping {url}")
     await page.get(url)
 
-    # Wait for page to load and JS to populate calendar
-    await asyncio.sleep(2.0)
+    # small delay to let JS start running (helps with race conditions)
+    await asyncio.sleep(0.35)
 
     # ---- helper: robust wait for calendar table (tries select, then fallback evaluate)
     async def _wait_for_calendar_table_and_get_rows(page, url, max_attempts=3):
