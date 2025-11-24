@@ -10,3 +10,5 @@ forexfactory_debug_*
 src/forexfactory/utils/__pycache__/*
 src/forexfactory_scraper.egg-info/PKG-INFO
 .claude/
+build/
+*.egg-info/

@@ -1,6 +1,0 @@
-nodriver
-python-dateutil
-tzdata
-pandas
-rich>=14.1.0
-forex-common
